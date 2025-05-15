@@ -1,3 +1,5 @@
 diffsynth.egg-info
 *.mp4
 *.csv
+*.pyc*
+*.pth

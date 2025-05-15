@@ -1,0 +1,67 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python Debugger: Current File",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${file}",
+        "console": "integratedTerminal",
+        "args": [
+          "--task",
+          "train",
+          "--train_architecture",
+          "full",
+          "--dataset_path",
+          "panda_100_pick_red_cube_randcam",
+          "--output_path",
+          "./log",
+          "--dit_path",
+          "/home/io/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/diffusion_pytorch_model.safetensors",
+          "--image_encoder_path",
+          "/home/io/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+          "--steps_per_epoch",
+          "20",
+          "--max_epochs",
+          "10",
+          "--learning_rate",
+          "1e-4",
+          "--accumulate_grad_batches",
+          "1",
+          "--use_gradient_checkpointing"
+        ]
+        // "args": [
+        //   "--task",
+        //   "test",
+        //   "--resume_from",
+        //   "log/lightning_logs/version_18/checkpoints/epoch=19-step=25000.ckpt",
+        //   "--dataset_path",
+        //   "97"
+        // ]
+        // "args": [
+        //   "--task",
+        //   "data_process",
+        //   "--dataset_path",
+        //   "panda_100_pick_red_cube_randcam",
+        //   "--output_path",
+        //   "panda_100_pick_red_cube_randcam/processed",
+        //   "--text_encoder_path",
+        //   "/home/io/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_t5_umt5-xxl-enc-bf16.pth",
+        //   "--vae_path",
+        //   "/home/io/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/Wan2.1_VAE.pth",
+        //   "--image_encoder_path",
+        //   "/home/io/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+        //   "--tiled",
+        //   "--num_frames",
+        //   "385",
+        //   "--height",
+        //   "256",
+        //   "--width",
+        //   "256"
+        // ]
+      }
+    ]
+  }
