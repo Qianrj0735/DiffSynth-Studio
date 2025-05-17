@@ -3,3 +3,7 @@ diffsynth.egg-info
 *.csv
 *.pyc*
 *.pth
+*.ckpt
+*.log
+*.json
+*wandb*

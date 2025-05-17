@@ -94,9 +94,10 @@ def load_model_from_single_file(
             model = model_class(**extra_kwargs)
         if hasattr(model, "eval"):
             model = model.eval()
-        for k, v in model.clean_x_embedder.state_dict().items():
-            param = torch.randn(v.shape[:]).to(dtype=torch_dtype, device=device)
-            model_state_dict[f"clean_x_embedder.{k}"] = param
+        if hasattr(model, "clean_x_embedder"):
+            for k, v in model.clean_x_embedder.state_dict().items():
+                param = torch.randn(v.shape[:]).to(dtype=torch_dtype, device=device)
+                model_state_dict[f"clean_x_embedder.{k}"] = param
         model.load_state_dict(model_state_dict, assign=True)
         model = model.to(dtype=torch_dtype, device=device)
         loaded_model_names.append(model_name)

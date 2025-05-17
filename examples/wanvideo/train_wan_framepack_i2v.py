@@ -9,6 +9,10 @@ import torchvision
 from PIL import Image
 import numpy as np
 import random
+import datetime
+from pytorch_lightning.loggers import WandbLogger
+from torch.utils.data import random_split
+from skvideo.io import vwrite
 
 
 def set_seed(seed: int = 42):
@@ -247,6 +251,7 @@ class TensorDataset(torch.utils.data.Dataset):
         self.steps_per_epoch = steps_per_epoch
         self.episode_length = (episode_length_real - 1) // 4
         self.latent_window_size = latent_window_size
+        self.is_val_dataset = False
 
     # TODO: RGB2BGR
     def __getitem__(self, index):
@@ -257,7 +262,8 @@ class TensorDataset(torch.utils.data.Dataset):
         generating_first_idx = random.randint(
             0, self.episode_length - 1 - self.latent_window_size
         )
-        # generating_first_idx = 1
+        if self.is_val_dataset:
+            generating_first_idx = 0
         generating_indices = torch.arange(
             generating_first_idx, generating_first_idx + self.latent_window_size
         )
@@ -323,6 +329,8 @@ class LightningModelForTrain(pl.LightningModule):
     def __init__(
         self,
         dit_path,
+        vae_path,
+        run_dir,
         learning_rate=1e-5,
         lora_rank=4,
         lora_alpha=4,
@@ -336,11 +344,11 @@ class LightningModelForTrain(pl.LightningModule):
         super().__init__()
         model_manager = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
         if os.path.isfile(dit_path):
-            model_manager.load_models([dit_path])
+            model_manager.load_models([vae_path, dit_path])
         else:
             dit_path = dit_path.split(",")
-            model_manager.load_models([dit_path])
-
+            model_manager.load_models([vae_path, dit_path])
+        self.run_dir = run_dir
         self.pipe = WanVideoPipeline.from_model_manager(model_manager)
         self.pipe.scheduler.set_timesteps(1000, training=True)
         self.freeze_parameters()
@@ -490,6 +498,77 @@ class LightningModelForTrain(pl.LightningModule):
             if name in trainable_param_names:
                 lora_state_dict[name] = param
         checkpoint.update(lora_state_dict)
+
+    def validation_step(self, batch, batch_idx):
+        start_latent = batch["start_latent"].to(self.device)
+        history_latents = torch.zeros(
+            size=(1, 16, 16 + 2 + 1, start_latent.size(-2), start_latent.size(-2)),
+            dtype=torch.float32,
+        ).cpu()
+        history_pixels = None
+        videos = []
+        history_latents = torch.cat(
+            [history_latents, start_latent.to(history_latents)], dim=2
+        )
+        total_generated_latent_frames = 1
+        clean_latent_indices_start = batch["clean_latent_indices_start"].to(self.device)
+        clean_latent_4x_indices = batch["clean_latent_4x_indices"].to(self.device)
+        clean_latent_2x_indices = batch["clean_latent_2x_indices"].to(self.device)
+        clean_latent_indices = batch["clean_latent_indices"].to(self.device)
+        latent_indices = batch["latent_indices"].to(self.device)
+        prompt_emb, image_emb = batch["prompt_emb"], batch["image_emb"]
+        prompt_emb["context"] = prompt_emb["context"][0].to(self.device)
+        image_emb = batch["image_emb"]
+        if "clip_feature" in image_emb:
+            image_emb["clip_feature"] = image_emb["clip_feature"][0].to(self.device)
+        if "y" in image_emb:
+            image_emb["y"] = image_emb["y"][0].to(self.device)
+
+        for section_index in range(5):
+            clean_latents_4x, clean_latents_2x, clean_latents_1x = history_latents[
+                :, :, -sum([16, 2, 1]) :, :, :
+            ].split([16, 2, 1], dim=2)
+            clean_latents = torch.cat(
+                [start_latent.to(history_latents), clean_latents_1x], dim=2
+            )
+            # latents
+            clean_latent_kwargs = {
+                "clean_latent_indices_start": clean_latent_indices_start,
+                "clean_latent_4x_indices": clean_latent_4x_indices,
+                "clean_latent_2x_indices": clean_latent_2x_indices,
+                "clean_latent_indices": clean_latent_indices,
+                "latent_indices": latent_indices,
+                "start_latent": start_latent,
+                "clean_latents_4x": clean_latents_4x,
+                "clean_latents_2x": clean_latents_2x,
+                "clean_latents": clean_latents,
+                # "latents": latents,
+            }
+            noise = torch.randn(
+                batch["latents"].shape[:],
+                generator=torch.Generator().manual_seed(0),
+            )
+            video, generated_latents = self.pipe(
+                cfg_scale=1.0,
+                num_inference_steps=50,
+                seed=0,
+                tiled=True,
+                noise=noise,
+                prompt_emb=prompt_emb,
+                image_emb=image_emb,
+                clean_latent_kwargs=clean_latent_kwargs,
+                device=torch.device("cuda"),
+            )
+            total_generated_latent_frames += int(generated_latents.shape[2])
+            history_latents = torch.cat(
+                [history_latents, generated_latents.to(history_latents)], dim=2
+            )
+            videos.extend(video)
+        print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
+        # for i, v in enumerate(videos):
+        #     videos[i] = np.asarray(v)
+        vwrite(f"{self.run_dir}/{self.trainer.current_epoch}.mp4", videos)
+        return
 
 
 def parse_args():
@@ -726,11 +805,21 @@ def train(args):
         os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
     )
+    # trainset, valset = random_split(dataset, [0.9, 0.1])
+
     dataloader = torch.utils.data.DataLoader(
         dataset, shuffle=True, batch_size=1, num_workers=args.dataloader_num_workers
     )
+    val_dataloader = torch.utils.data.DataLoader(
+        dataset, shuffle=False, batch_size=1, num_workers=args.dataloader_num_workers
+    )
+    run_name = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    run_dir = os.path.join(args.output_path, run_name)
+    os.makedirs(run_dir, exist_ok=True)
     model = LightningModelForTrain(
         dit_path=args.dit_path,
+        vae_path=args.vae_path,
+        run_dir=run_dir,
         learning_rate=args.learning_rate,
         train_architecture=args.train_architecture,
         lora_rank=args.lora_rank,
@@ -756,21 +845,31 @@ def train(args):
         logger = [swanlab_logger]
     else:
         logger = None
+    # 1) 根据当前时间生成 run 名称和输出目录
+
+    # 2) 用 W&B 记录日志，log 名称同 run_name
+    wandb_logger = WandbLogger(
+        project="wan_fmpk",  # 可按需改为你的项目名
+        name=run_name,  # 实验名字
+        save_dir=args.output_path,  # W&B 本地日志保存根目录
+    )
+    # logger = wandb_logger
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator="gpu",
         devices="auto",
         precision="bf16",
         strategy=args.training_strategy,
-        default_root_dir=args.output_path,
+        default_root_dir=run_dir,
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
-        logger=logger,
+        logger=wandb_logger,
         log_every_n_steps=1,
         gradient_clip_val=0.5,  # clip 阈值
-        gradient_clip_algorithm="norm",  # “norm” 或 “value”
+        gradient_clip_algorithm="norm",
+        num_sanity_val_steps=0,
     )
-    trainer.fit(model, dataloader)
+    trainer.fit(model, dataloader, val_dataloaders=val_dataloader)
 
 
 if __name__ == "__main__":
