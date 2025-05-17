@@ -11,6 +11,21 @@ import numpy as np
 import random
 
 
+def set_seed(seed: int = 42):
+    # 1. Python、NumPy、Torch 全局随机种子
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # 2. CUDA 后端设置：禁用非确定性算法，禁止 benchmark
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # 3. （可选）确保新的 cuBLAS workspace 行为更可控
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    # 4. Lightning 自带的全局种子设置
+    pl.seed_everything(seed, workers=True)
+
+
 class TextVideoDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -233,12 +248,15 @@ class TensorDataset(torch.utils.data.Dataset):
         self.episode_length = (episode_length_real - 1) // 4
         self.latent_window_size = latent_window_size
 
+    # TODO: RGB2BGR
     def __getitem__(self, index):
         data_id = torch.randint(0, len(self.path), (1,))[0]
         data_id = (data_id + index) % len(self.path)  # For fixed seed.
         path = self.path[data_id]
         data = torch.load(path, weights_only=True, map_location="cpu")
-        generating_first_idx = random.randint(0, self.episode_length - 1)
+        generating_first_idx = random.randint(
+            0, self.episode_length - 1 - self.latent_window_size
+        )
         # generating_first_idx = 1
         generating_indices = torch.arange(
             generating_first_idx, generating_first_idx + self.latent_window_size
@@ -254,6 +272,7 @@ class TensorDataset(torch.utils.data.Dataset):
             latent_indices,
         ) = indices.split([1, 16, 2, 1, self.latent_window_size], dim=1)
         read_clean_latent_indices_start = 0
+        # TODO: see see hunyuan
         read_clean_latent_4x_indices = (
             np.array(clean_latent_4x_indices[0]) - 20 + generating_first_idx
         )
@@ -276,6 +295,19 @@ class TensorDataset(torch.utils.data.Dataset):
         latents = self.read_latent(data["latents"], generating_indices)
         start_latent = self.read_latent(data["latents"], np.zeros(1))
         clean_latents = torch.cat((start_latent, clean_latents_1x), dim=1)
+        clean_latent_indices = torch.cat(
+            [clean_latent_indices_start, clean_latent_1x_indices], dim=1
+        )
+        data["clean_latent_indices_start"] = clean_latent_indices_start
+        data["clean_latent_4x_indices"] = clean_latent_4x_indices
+        data["clean_latent_2x_indices"] = clean_latent_2x_indices
+        data["clean_latent_indices"] = clean_latent_indices
+        data["latent_indices"] = latent_indices
+        data["start_latent"] = start_latent
+        data["clean_latents_4x"] = clean_latents_4x
+        data["clean_latents_2x"] = clean_latents_2x
+        data["clean_latents"] = clean_latents
+        data["latents"] = latents
         return data
 
     def read_latent(self, latents, read_indices):
@@ -398,6 +430,16 @@ class LightningModelForTrain(pl.LightningModule):
         noisy_latents = self.pipe.scheduler.add_noise(latents, noise, timestep)
         training_target = self.pipe.scheduler.training_target(latents, noise, timestep)
 
+        clean_latent_indices_start = batch["clean_latent_indices_start"].to(self.device)
+        clean_latent_4x_indices = batch["clean_latent_4x_indices"].to(self.device)
+        clean_latent_2x_indices = batch["clean_latent_2x_indices"].to(self.device)
+        clean_latent_indices = batch["clean_latent_indices"].to(self.device)
+        latent_indices = batch["latent_indices"].to(self.device)
+        start_latent = batch["start_latent"].to(self.device)
+        clean_latents_4x = batch["clean_latents_4x"].to(self.device)
+        clean_latents_2x = batch["clean_latents_2x"].to(self.device)
+        clean_latents = batch["clean_latents"].to(self.device)
+        # latents = batch["latents"]
         # Compute loss
         noise_pred = self.pipe.denoising_model()(
             noisy_latents,
@@ -407,6 +449,15 @@ class LightningModelForTrain(pl.LightningModule):
             **image_emb,
             use_gradient_checkpointing=self.use_gradient_checkpointing,
             use_gradient_checkpointing_offload=self.use_gradient_checkpointing_offload,
+            clean_latent_indices_start=clean_latent_indices_start,
+            clean_latent_4x_indices=clean_latent_4x_indices,
+            clean_latent_2x_indices=clean_latent_2x_indices,
+            clean_latent_indices=clean_latent_indices,
+            latent_indices=latent_indices,
+            start_latent=start_latent,
+            clean_latents_4x=clean_latents_4x,
+            clean_latents_2x=clean_latents_2x,
+            clean_latents=clean_latents,
         )
         loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
         loss = loss * self.pipe.scheduler.training_weight(timestep)
@@ -669,6 +720,7 @@ def data_process(args):
 
 
 def train(args):
+    set_seed(3407)
     dataset = TensorDataset(
         args.dataset_path,
         os.path.join(args.dataset_path, "metadata.csv"),
@@ -714,6 +766,9 @@ def train(args):
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
         logger=logger,
+        log_every_n_steps=1,
+        gradient_clip_val=0.5,  # clip 阈值
+        gradient_clip_algorithm="norm",  # “norm” 或 “value”
     )
     trainer.fit(model, dataloader)
 

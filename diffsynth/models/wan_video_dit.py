@@ -28,6 +28,29 @@ except ModuleNotFoundError:
     SAGE_ATTN_AVAILABLE = False
 
 
+def pad_for_3d_conv(x, kernel_size):
+    b, c, t, h, w = x.shape
+    pt, ph, pw = kernel_size
+    pad_t = (pt - (t % pt)) % pt
+    pad_h = (ph - (h % ph)) % ph
+    pad_w = (pw - (w % pw)) % pw
+    return torch.nn.functional.pad(x, (0, pad_w, 0, pad_h, 0, pad_t), mode="replicate")
+
+
+def center_down_sample_3d(x, kernel_size):
+    # pt, ph, pw = kernel_size
+    # cp = (pt * ph * pw) // 2
+    # xp = einops.rearrange(x, 'b c (t pt) (h ph) (w pw) -> (pt ph pw) b c t h w', pt=pt, ph=ph, pw=pw)
+    # xc = xp[cp]
+    # return xc
+    x_real = torch.view_as_real(x)
+    x_real = rearrange(x_real, "b c t h w m -> b (c m) t h w")
+    x_real = torch.nn.functional.avg_pool3d(x_real, kernel_size, stride=kernel_size)
+    x_real = rearrange(x_real, "b (c m) t h w -> b c t h w m", m=2).contiguous()
+    x = torch.view_as_complex(x_real)
+    return x
+
+
 def flash_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -295,6 +318,92 @@ class Head(nn.Module):
         return x
 
 
+import einops
+
+
+class HunyuanVideoPatchEmbedForCleanLatents(nn.Module):
+    def __init__(self, inner_dim):
+        super().__init__()
+        self.proj = nn.Conv3d(16, inner_dim, kernel_size=(1, 2, 2), stride=(1, 2, 2))
+        self.proj_2x = nn.Conv3d(16, inner_dim, kernel_size=(2, 4, 4), stride=(2, 4, 4))
+        self.proj_4x = nn.Conv3d(16, inner_dim, kernel_size=(4, 8, 8), stride=(4, 8, 8))
+
+    @torch.no_grad()
+    def initialize_weight_from_another_conv3d(self, another_layer):
+        weight = another_layer.weight.detach().clone()
+        bias = another_layer.bias.detach().clone()
+
+        sd = {
+            "proj.weight": weight.clone(),
+            "proj.bias": bias.clone(),
+            "proj_2x.weight": einops.repeat(
+                weight, "b c t h w -> b c (t tk) (h hk) (w wk)", tk=2, hk=2, wk=2
+            )
+            / 8.0,
+            "proj_2x.bias": bias.clone(),
+            "proj_4x.weight": einops.repeat(
+                weight, "b c t h w -> b c (t tk) (h hk) (w wk)", tk=4, hk=4, wk=4
+            )
+            / 64.0,
+            "proj_4x.bias": bias.clone(),
+        }
+
+        sd = {k: v.clone() for k, v in sd.items()}
+
+        self.load_state_dict(sd)
+        return
+
+
+class HunyuanVideoRotaryPosEmbed(nn.Module):
+    def __init__(self, rope_dim, theta):
+        super().__init__()
+        self.DT, self.DY, self.DX = rope_dim
+        self.theta = theta
+
+    @torch.no_grad()
+    def get_frequency(self, dim, pos):
+        T, H, W = pos.shape
+        freqs = 1.0 / (
+            self.theta
+            ** (
+                torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[
+                    : (dim // 2)
+                ]
+                / dim
+            )
+        )
+        freqs = (
+            torch.outer(freqs, pos.reshape(-1))
+            .unflatten(-1, (T, H, W))
+            .repeat_interleave(2, dim=0)
+        )
+        return freqs.cos(), freqs.sin()
+
+    @torch.no_grad()
+    def forward_inner(self, frame_indices, height, width, device):
+        GT, GY, GX = torch.meshgrid(
+            frame_indices.to(device=device, dtype=torch.float32),
+            torch.arange(0, height, device=device, dtype=torch.float32),
+            torch.arange(0, width, device=device, dtype=torch.float32),
+            indexing="ij",
+        )
+
+        FCT, FST = self.get_frequency(self.DT, GT)
+        FCY, FSY = self.get_frequency(self.DY, GY)
+        FCX, FSX = self.get_frequency(self.DX, GX)
+
+        result = torch.cat([FCT, FCY, FCX, FST, FSY, FSX], dim=0)
+
+        return result.to(device)
+
+    @torch.no_grad()
+    def forward(self, frame_indices, height, width, device):
+        frame_indices = frame_indices.unbind(0)
+        results = [self.forward_inner(f, height, width, device) for f in frame_indices]
+        results = torch.stack(results, dim=0)
+        return results
+
+
 class WanModel(torch.nn.Module):
     def __init__(
         self,
@@ -342,6 +451,7 @@ class WanModel(torch.nn.Module):
                 1280, dim, has_pos_emb=has_image_pos_emb
             )  # clip_feature_dim = 1280
         self.has_image_pos_emb = has_image_pos_emb
+        self.clean_x_embedder = HunyuanVideoPatchEmbedForCleanLatents(inner_dim=dim)
 
     def patchify(self, x: torch.Tensor):
         x = self.patch_embedding(x)
@@ -361,6 +471,100 @@ class WanModel(torch.nn.Module):
             z=self.patch_size[2],
         )
 
+    def retrieve_rope(self, frame_indices, h, w, device):
+        frame_indices = frame_indices.to(self.freqs[0].device)
+        rope_freqs = torch.cat(
+            [
+                self.freqs[0][frame_indices[0, 0]]
+                .view(len(frame_indices[0, 0]), 1, 1, -1)
+                .expand(len(frame_indices[0, 0]), h, w, -1),
+                self.freqs[1][:h]
+                .view(1, h, 1, -1)
+                .expand(len(frame_indices[0, 0]), h, w, -1),
+                self.freqs[2][:w]
+                .view(1, 1, w, -1)
+                .expand(len(frame_indices[0, 0]), h, w, -1),
+            ],
+            dim=-1,
+        ).to(device)
+        rope_freqs = rearrange(rope_freqs, "f h w c -> c f h w").unsqueeze(0)
+        return rope_freqs
+
+    def process_input_hidden_states(
+        self,
+        latents,
+        latent_indices=None,
+        clean_latents=None,
+        clean_latent_indices=None,
+        clean_latents_2x=None,
+        clean_latent_2x_indices=None,
+        clean_latents_4x=None,
+        clean_latent_4x_indices=None,
+        **kwargs,
+    ):
+
+        hidden_states, (f, h, w) = self.patchify(latents)
+        len_latents = hidden_states.shape[1]
+        # f = 29  # TODO currently hardcoded for start 1 history 19 predict 9
+        latent_indices = latent_indices.to(self.freqs[0].device)
+        rope_freqs = self.retrieve_rope(latent_indices, h, w, hidden_states.device)
+        rope_freqs = rope_freqs.flatten(2).transpose(1, 2)
+        if clean_latents is not None and clean_latent_indices is not None:
+            clean_latents = clean_latents.to(hidden_states)
+            clean_latents = self.clean_x_embedder.proj(clean_latents)
+            clean_latents = clean_latents.flatten(2).transpose(1, 2)
+            clean_latent_rope_freqs = (
+                self.retrieve_rope(clean_latent_indices, h, w, hidden_states.device)
+                .flatten(2)
+                .transpose(1, 2)
+            )
+            hidden_states = torch.cat([clean_latents, hidden_states], dim=1)
+            rope_freqs = torch.cat([clean_latent_rope_freqs, rope_freqs], dim=1)
+
+        if clean_latents_2x is not None and clean_latent_2x_indices is not None:
+            clean_latents_2x = clean_latents_2x.to(hidden_states)
+            clean_latents_2x = pad_for_3d_conv(clean_latents_2x, (2, 4, 4))
+            clean_latents_2x = self.clean_x_embedder.proj_2x(clean_latents_2x)
+            clean_latents_2x = clean_latents_2x.flatten(2).transpose(1, 2)
+            clean_latent_2x_rope_freqs = self.retrieve_rope(
+                clean_latent_2x_indices, h, w, hidden_states.device
+            )
+            clean_latent_2x_rope_freqs = pad_for_3d_conv(
+                clean_latent_2x_rope_freqs, (2, 2, 2)
+            )
+            clean_latent_2x_rope_freqs = center_down_sample_3d(
+                clean_latent_2x_rope_freqs, (2, 2, 2)
+            )
+            clean_latent_2x_rope_freqs = clean_latent_2x_rope_freqs.flatten(
+                2
+            ).transpose(1, 2)
+
+            hidden_states = torch.cat([clean_latents_2x, hidden_states], dim=1)
+            rope_freqs = torch.cat([clean_latent_2x_rope_freqs, rope_freqs], dim=1)
+
+        if clean_latents_4x is not None and clean_latent_4x_indices is not None:
+            clean_latents_4x = clean_latents_4x.to(hidden_states)
+            clean_latents_4x = pad_for_3d_conv(clean_latents_4x, (4, 8, 8))
+            clean_latents_4x = self.clean_x_embedder.proj_4x(clean_latents_4x)
+            clean_latents_4x = clean_latents_4x.flatten(2).transpose(1, 2)
+            clean_latent_4x_rope_freqs = self.retrieve_rope(
+                clean_latent_4x_indices, h, w, hidden_states.device
+            )
+            clean_latent_4x_rope_freqs = pad_for_3d_conv(
+                clean_latent_4x_rope_freqs, (4, 4, 4)
+            )
+            clean_latent_4x_rope_freqs = center_down_sample_3d(
+                clean_latent_4x_rope_freqs, (4, 4, 4)
+            )
+            clean_latent_4x_rope_freqs = clean_latent_4x_rope_freqs.flatten(
+                2
+            ).transpose(1, 2)
+            # clean_latent_4x_rope_freqs = torch.zeros_like(clean_latent_4x_rope_freqs)
+            hidden_states = torch.cat([clean_latents_4x, hidden_states], dim=1)
+            rope_freqs = torch.cat([clean_latent_4x_rope_freqs, rope_freqs], dim=1)
+
+        return hidden_states, rope_freqs.transpose(0, 1), len_latents, (f, h, w)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -370,30 +574,41 @@ class WanModel(torch.nn.Module):
         y: Optional[torch.Tensor] = None,
         use_gradient_checkpointing: bool = False,
         use_gradient_checkpointing_offload: bool = False,
+        clean_latent_indices_start: torch.Tensor = None,
+        clean_latent_4x_indices: torch.Tensor = None,
+        clean_latent_2x_indices: torch.Tensor = None,
+        clean_latent_indices: torch.Tensor = None,
+        latent_indices: torch.Tensor = None,
+        start_latent: torch.Tensor = None,
+        clean_latents_4x: torch.Tensor = None,
+        clean_latents_2x: torch.Tensor = None,
+        clean_latents: torch.Tensor = None,
         **kwargs,
     ):
+
         t = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep))
         t_mod = self.time_projection(t).unflatten(1, (6, self.dim))
         context = self.text_embedding(context)
 
         if self.has_image_input:
-            x = torch.cat([x, y], dim=1)  # (b, c_x + c_y, f, h, w)
+            x = torch.cat([x, y[:, :, : x.size(2)]], dim=1)  # (b, c_x + c_y, f, h, w)
             clip_embdding = self.img_emb(clip_feature)
             context = torch.cat([clip_embdding, context], dim=1)
 
-        x, (f, h, w) = self.patchify(x)
-
-        freqs = (
-            torch.cat(
-                [
-                    self.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-                    self.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-                    self.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
-                ],
-                dim=-1,
-            )
-            .reshape(f * h * w, 1, -1)
-            .to(x.device)
+        all_latents = {
+            "latents": x,
+            "clean_latent_indices_start": clean_latent_indices_start,
+            "clean_latent_4x_indices": clean_latent_4x_indices,
+            "clean_latent_2x_indices": clean_latent_2x_indices,
+            "clean_latent_indices": clean_latent_indices,
+            "latent_indices": latent_indices,
+            "start_latent": start_latent,
+            "clean_latents_4x": clean_latents_4x,
+            "clean_latents_2x": clean_latents_2x,
+            "clean_latents": clean_latents,
+        }
+        x, freqs, len_latents, unpatchify_info = self.process_input_hidden_states(
+            **all_latents
         )
 
         def create_custom_forward(module):
@@ -427,7 +642,8 @@ class WanModel(torch.nn.Module):
                 x = block(x, context, t_mod, freqs)
 
         x = self.head(x, t)
-        x = self.unpatchify(x, (f, h, w))
+        x = x[:, :len_latents]
+        x = self.unpatchify(x, unpatchify_info)
         return x
 
     @staticmethod
