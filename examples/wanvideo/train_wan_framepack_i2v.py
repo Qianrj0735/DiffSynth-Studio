@@ -13,6 +13,8 @@ import datetime
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import random_split
 from skvideo.io import vwrite
+from tqdm import tqdm
+import time
 
 
 def set_seed(seed: int = 42):
@@ -500,9 +502,11 @@ class LightningModelForTrain(pl.LightningModule):
         checkpoint.update(lora_state_dict)
 
     def validation_step(self, batch, batch_idx):
+        self.pipe.requires_grad_(False)
+        self.pipe.eval()
         start_latent = batch["start_latent"].to(self.device)
         history_latents = torch.zeros(
-            size=(1, 16, 16 + 2 + 1, start_latent.size(-2), start_latent.size(-2)),
+            size=(1, 16, 16 + 2 + 1, start_latent.size(-2), start_latent.size(-1)),
             dtype=torch.float32,
         ).cpu()
         history_pixels = None
@@ -524,7 +528,7 @@ class LightningModelForTrain(pl.LightningModule):
         if "y" in image_emb:
             image_emb["y"] = image_emb["y"][0].to(self.device)
 
-        for section_index in range(5):
+        for section_index in tqdm(range(2)):
             clean_latents_4x, clean_latents_2x, clean_latents_1x = history_latents[
                 :, :, -sum([16, 2, 1]) :, :, :
             ].split([16, 2, 1], dim=2)
@@ -567,7 +571,22 @@ class LightningModelForTrain(pl.LightningModule):
         print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
         # for i, v in enumerate(videos):
         #     videos[i] = np.asarray(v)
-        vwrite(f"{self.run_dir}/{self.trainer.current_epoch}.mp4", videos)
+        vwrite(
+            f"{self.run_dir}/{self.trainer.current_epoch}_{time.time_ns()}.mp4", videos
+        )
+        self.pipe.scheduler.set_timesteps(1000, training=True)
+        self.freeze_parameters()
+        if False:
+            self.add_lora_to_model(
+                self.pipe.denoising_model(),
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_target_modules=lora_target_modules,
+                init_lora_weights=init_lora_weights,
+                pretrained_lora_path=pretrained_lora_path,
+            )
+        else:
+            self.pipe.denoising_model().requires_grad_(True)
         return
 
 
@@ -658,7 +677,7 @@ def parse_args():
         "--num_frames",
         type=int,
         default=81,
-        help="Number of frames.",
+        help="Number of frames.(in real)",
     )
     parser.add_argument(
         "--height",
@@ -804,6 +823,7 @@ def train(args):
         args.dataset_path,
         os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
+        episode_length_real=args.num_frames,
     )
     # trainset, valset = random_split(dataset, [0.9, 0.1])
 
@@ -867,7 +887,8 @@ def train(args):
         log_every_n_steps=1,
         gradient_clip_val=0.5,  # clip 阈值
         gradient_clip_algorithm="norm",
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=1,
+        limit_val_batches=1,
     )
     trainer.fit(model, dataloader, val_dataloaders=val_dataloader)
 
