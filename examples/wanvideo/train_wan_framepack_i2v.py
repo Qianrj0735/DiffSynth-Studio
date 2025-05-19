@@ -15,6 +15,11 @@ from torch.utils.data import random_split
 from skvideo.io import vwrite
 from tqdm import tqdm
 import time
+from pytorch_lightning.utilities import rank_zero_only
+import torch.distributed as dist
+from tabulate import tabulate
+import wandb
+import yaml
 
 
 def set_seed(seed: int = 42):
@@ -30,6 +35,39 @@ def set_seed(seed: int = 42):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
     # 4. Lightning 自带的全局种子设置
     pl.seed_everything(seed, workers=True)
+
+
+def save_param_table(model, base_lr, clean_lr, out_path="params_table.txt"):
+    """
+    将模型中所有参数的 name、learning rate、requires_grad 写成表格并保存为 txt。
+
+    :param model: 包含 named_parameters() 的模型（如 self.pipe.denoising_model()）
+    :param base_lr: 其他参数的基础学习率（如 self.learning_rate）
+    :param clean_lr: clean_x_embedder 模块的学习率（如 1e-4）
+    :param out_path: 保存表格的文件路径
+    """
+    # 收集 rows
+    rows = []
+    for name, param in model.named_parameters():
+        lr = clean_lr if "clean_x_embedder" in name else base_lr
+        rows.append([name, lr, param.requires_grad])
+
+    # 生成 GitHub 风格的表格
+    table = tabulate(
+        rows,
+        headers=["parameter name", "learning rate", "requires_grad"],
+        tablefmt="github",
+    )
+
+    # 确保目录存在
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    # 写入文件
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(table)
+    print(f"Saved parameter table to {out_path}")
+
+
+# TODO move above helper functions to utils
 
 
 class TextVideoDataset(torch.utils.data.Dataset):
@@ -316,6 +354,7 @@ class TensorDataset(torch.utils.data.Dataset):
         data["clean_latents_2x"] = clean_latents_2x
         data["clean_latents"] = clean_latents
         data["latents"] = latents
+        data["path"] = path
         return data
 
     def read_latent(self, latents, read_indices):
@@ -477,10 +516,24 @@ class LightningModelForTrain(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        trainable_modules = filter(
-            lambda p: p.requires_grad, self.pipe.denoising_model().parameters()
+        named_trainable = [
+            (name, param)
+            for name, param in self.pipe.denoising_model().named_parameters()
+            if param.requires_grad
+        ]
+        clean_params = [p for n, p in named_trainable if "clean_x_embedder" in n]
+        other_params = [p for n, p in named_trainable if "clean_x_embedder" not in n]
+        param_groups = [
+            {"params": clean_params, "lr": 1e-4},
+            {"params": other_params, "lr": self.learning_rate},
+        ]
+        optimizer = torch.optim.AdamW(param_groups)
+        save_param_table(
+            model=self.pipe.denoising_model(),
+            base_lr=self.learning_rate,
+            clean_lr=1e-4,
+            out_path=f"{self.run_dir}/param_table.txt",
         )
-        optimizer = torch.optim.AdamW(trainable_modules, lr=self.learning_rate)
         return optimizer
 
     def on_save_checkpoint(self, checkpoint):
@@ -528,7 +581,7 @@ class LightningModelForTrain(pl.LightningModule):
         if "y" in image_emb:
             image_emb["y"] = image_emb["y"][0].to(self.device)
 
-        for section_index in tqdm(range(2)):
+        for section_index in tqdm(range(5)):
             clean_latents_4x, clean_latents_2x, clean_latents_1x = history_latents[
                 :, :, -sum([16, 2, 1]) :, :, :
             ].split([16, 2, 1], dim=2)
@@ -568,11 +621,13 @@ class LightningModelForTrain(pl.LightningModule):
                 [history_latents, generated_latents.to(history_latents)], dim=2
             )
             videos.extend(video)
-        print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
+        # print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
         # for i, v in enumerate(videos):
         #     videos[i] = np.asarray(v)
+        p = batch["path"][0].replace("/", "_")
         vwrite(
-            f"{self.run_dir}/{self.trainer.current_epoch}_{time.time_ns()}.mp4", videos
+            f"{self.run_dir}/{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
+            videos,
         )
         self.pipe.scheduler.set_timesteps(1000, training=True)
         self.freeze_parameters()
@@ -817,6 +872,49 @@ def data_process(args):
     trainer.test(model, dataloader)
 
 
+def save_args_to_yaml(args: argparse.Namespace, filepath: str):
+    """
+    将 argparse.Namespace 对象保存为 YAML 文件。
+
+    :param args: argparse.parse_args() 返回的 Namespace 对象
+    :param filepath: 要保存的 YAML 文件路径（可以是相对或绝对路径）
+    """
+    # 确保目录存在
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+    # 把 Namespace 转为字典，然后写入 YAML
+    with open(filepath, "w", encoding="utf-8") as f:
+        yaml.safe_dump(vars(args), f, allow_unicode=True)
+
+
+# @rank_zero_only
+def init_wandb_logger(args):
+    # 只会在 global_rank==0 时运行
+
+    run_name = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
+    run_name = f"{run_name}_lr_{args.learning_rate}_bsz_{args.accumulate_grad_batches * torch.cuda.device_count()}_eplen_{args.steps_per_epoch}"
+    run_dir = os.path.join(args.output_path, run_name)
+    save_args_to_yaml(args, os.path.join(run_dir, "args.yaml"))
+    os.makedirs(run_dir, exist_ok=True)
+    return (
+        WandbLogger(
+            project="Framepack_reproduce",
+            name=run_name,
+            id=run_name,  # 同 name 保证唯一
+            save_dir="logs",
+            entity="qianrj_team",
+            config=vars(args),
+        ),
+        run_dir,
+        run_name,
+    )
+
+
+@rank_zero_only
+def update_config(logger, config_dict):
+    logger.experiment.config.update(config_dict, allow_val_change=True)
+
+
 def train(args):
     set_seed(3407)
     dataset = TensorDataset(
@@ -833,9 +931,12 @@ def train(args):
     val_dataloader = torch.utils.data.DataLoader(
         dataset, shuffle=False, batch_size=1, num_workers=args.dataloader_num_workers
     )
-    run_name = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    run_dir = os.path.join(args.output_path, run_name)
-    os.makedirs(run_dir, exist_ok=True)
+    wandb_logger, run_dir, run_name = init_wandb_logger(args)
+    # name_holder = [wandb_logger, run_name, run_dir]
+    # dist.broadcast_object_list(name_holder, src=0)
+    # wandb_logger, run_name, run_dir = name_holder[0], name_holder[1], name_holder[2]
+    update_config(wandb_logger, vars(args))
+
     model = LightningModelForTrain(
         dit_path=args.dit_path,
         vae_path=args.vae_path,
@@ -865,14 +966,8 @@ def train(args):
         logger = [swanlab_logger]
     else:
         logger = None
-    # 1) 根据当前时间生成 run 名称和输出目录
 
-    # 2) 用 W&B 记录日志，log 名称同 run_name
-    wandb_logger = WandbLogger(
-        project="wan_fmpk",  # 可按需改为你的项目名
-        name=run_name,  # 实验名字
-        save_dir=args.output_path,  # W&B 本地日志保存根目录
-    )
+    # wandb.config.update(vars(args))
     # logger = wandb_logger
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,

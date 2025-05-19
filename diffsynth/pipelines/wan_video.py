@@ -863,6 +863,6 @@ def model_fn_wan_video(
     if use_unified_sequence_parallel:
         if dist.is_initialized() and dist.get_world_size() > 1:
             x = get_sp_group().all_gather(x, dim=1)
-    x = x[:, :len_latents]
+    x = x[:, -len_latents:]
     x = dit.unpatchify(x, unpatchify_info)
     return x

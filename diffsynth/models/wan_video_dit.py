@@ -642,7 +642,7 @@ class WanModel(torch.nn.Module):
                 x = block(x, context, t_mod, freqs)
 
         x = self.head(x, t)
-        x = x[:, :len_latents]
+        x = x[:, -len_latents:]
         x = self.unpatchify(x, unpatchify_info)
         return x
 

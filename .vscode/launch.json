@@ -42,11 +42,11 @@
         "--train_architecture",
         "full",
         "--dataset_path",
-        "/workspace/DiffSynth-Studio/epic",
+        "385_test",
         "--output_path",
         "./log",
         "--dit_path",
-        "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/diffusion_pytorch_model.safetensors",
+        "logs/Framepack_reproduce/2025_05_18_00_52_lr_0.0001_bsz_64_eplen_10000/checkpoints/epoch=19-step=3140.ckpt",
         "--image_encoder_path",
         "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
         "--vae_path",
@@ -61,7 +61,7 @@
         "4",
         "--use_gradient_checkpointing",
         "--num_frames",
-        "193"
+        "385"
       ]
       // "args": [
       //   "--task",

@@ -7,3 +7,10 @@ diffsynth.egg-info
 *.log
 *.json
 *wandb*
+*.txt
+*.yaml
+*.tar.gz
+*.safetensors
+*.mv
+*.msc
+*.pt
