@@ -685,7 +685,7 @@ class WanVideoPipeline(BasePipeline):
         self.load_models_to_device([])
         frames = self.tensor2video(frames[0])
 
-        return frames, latents
+        return frames, latents, tiler_kwargs
 
 
 class TeaCache:

@@ -275,6 +275,7 @@ class TensorDataset(torch.utils.data.Dataset):
         steps_per_epoch,
         episode_length_real=385,
         latent_window_size=9,
+        is_val_dataset=False,
     ):
         metadata = pd.read_csv(metadata_path)
         self.path = [
@@ -291,7 +292,7 @@ class TensorDataset(torch.utils.data.Dataset):
         self.steps_per_epoch = steps_per_epoch
         self.episode_length = (episode_length_real - 1) // 4
         self.latent_window_size = latent_window_size
-        self.is_val_dataset = False
+        self.is_val_dataset = is_val_dataset
 
     # TODO: RGB2BGR
     def __getitem__(self, index):
@@ -300,10 +301,10 @@ class TensorDataset(torch.utils.data.Dataset):
         path = self.path[data_id]
         data = torch.load(path, weights_only=True, map_location="cpu")
         generating_first_idx = random.randint(
-            0, self.episode_length - 1 - self.latent_window_size
+            1, self.episode_length - 1 - self.latent_window_size
         )
         if self.is_val_dataset:
-            generating_first_idx = 0
+            generating_first_idx = 1
         generating_indices = torch.arange(
             generating_first_idx, generating_first_idx + self.latent_window_size
         )
@@ -605,7 +606,7 @@ class LightningModelForTrain(pl.LightningModule):
                 batch["latents"].shape[:],
                 generator=torch.Generator().manual_seed(0),
             )
-            video, generated_latents = self.pipe(
+            video, generated_latents, tiler_kwargs = self.pipe(
                 cfg_scale=1.0,
                 num_inference_steps=50,
                 seed=0,
@@ -628,6 +629,16 @@ class LightningModelForTrain(pl.LightningModule):
         vwrite(
             f"{self.run_dir}/{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
             videos,
+        )
+        self.pipe.load_models_to_device(["vae"])
+        frames = self.pipe.decode_video(
+            history_latents[:, :, 16 + 2 + 1 :], **tiler_kwargs
+        )
+        self.pipe.load_models_to_device([])
+        frames = self.pipe.tensor2video(frames[0])
+        vwrite(
+            f"{self.run_dir}/decode_all_{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
+            frames,
         )
         self.pipe.scheduler.set_timesteps(1000, training=True)
         self.freeze_parameters()
@@ -652,7 +663,7 @@ def parse_args():
         type=str,
         default="data_process",
         required=True,
-        choices=["data_process", "train"],
+        choices=["data_process", "train", "inference"],
         help="Task. `data_process` or `train`.",
     )
     parser.add_argument(
@@ -691,6 +702,12 @@ def parse_args():
         type=str,
         default=None,
         help="Path of DiT.",
+    )
+    parser.add_argument(
+        "--trained_dit_path",
+        type=str,
+        default=None,
+        help="Path of trained DiT, to surpass the initialization of DiT.",
     )
     parser.add_argument(
         "--tiled",
@@ -923,13 +940,23 @@ def train(args):
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
     )
+    val_dataset = TensorDataset(
+        args.dataset_path,
+        os.path.join(args.dataset_path, "metadata.csv"),
+        steps_per_epoch=args.steps_per_epoch,
+        episode_length_real=args.num_frames,
+        is_val_dataset=True,
+    )
     # trainset, valset = random_split(dataset, [0.9, 0.1])
 
     dataloader = torch.utils.data.DataLoader(
         dataset, shuffle=True, batch_size=1, num_workers=args.dataloader_num_workers
     )
     val_dataloader = torch.utils.data.DataLoader(
-        dataset, shuffle=False, batch_size=1, num_workers=args.dataloader_num_workers
+        val_dataset,
+        shuffle=False,
+        batch_size=1,
+        num_workers=args.dataloader_num_workers,
     )
     wandb_logger, run_dir, run_name = init_wandb_logger(args)
     # name_holder = [wandb_logger, run_name, run_dir]
@@ -980,8 +1007,91 @@ def train(args):
         callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
         logger=wandb_logger,
         log_every_n_steps=1,
-        gradient_clip_val=0.5,  # clip 阈值
-        gradient_clip_algorithm="norm",
+        # gradient_clip_val=0.5,  # clip 阈值
+        # gradient_clip_algorithm="norm",
+        num_sanity_val_steps=1,
+        limit_val_batches=1,
+    )
+    trainer.fit(model, dataloader, val_dataloaders=val_dataloader)
+
+
+def inference(args):
+    set_seed(3407)
+    dataset = TensorDataset(
+        args.dataset_path,
+        os.path.join(args.dataset_path, "metadata.csv"),
+        steps_per_epoch=args.steps_per_epoch,
+        episode_length_real=args.num_frames,
+    )
+    val_dataset = TensorDataset(
+        args.dataset_path,
+        os.path.join(args.dataset_path, "metadata.csv"),
+        steps_per_epoch=args.steps_per_epoch,
+        episode_length_real=args.num_frames,
+        is_val_dataset=True,
+    )
+    # trainset, valset = random_split(dataset, [0.9, 0.1])
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, shuffle=True, batch_size=1, num_workers=args.dataloader_num_workers
+    )
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        shuffle=False,
+        batch_size=1,
+        num_workers=args.dataloader_num_workers,
+    )
+    wandb_logger, run_dir, run_name = init_wandb_logger(args)
+    # name_holder = [wandb_logger, run_name, run_dir]
+    # dist.broadcast_object_list(name_holder, src=0)
+    # wandb_logger, run_name, run_dir = name_holder[0], name_holder[1], name_holder[2]
+    update_config(wandb_logger, vars(args))
+
+    model = LightningModelForTrain(
+        dit_path=args.dit_path,
+        vae_path=args.vae_path,
+        run_dir=run_dir,
+        learning_rate=args.learning_rate,
+        train_architecture=args.train_architecture,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_target_modules=args.lora_target_modules,
+        init_lora_weights=args.init_lora_weights,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+        use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
+        pretrained_lora_path=args.pretrained_lora_path,
+    )
+    if args.use_swanlab:
+        from swanlab.integration.pytorch_lightning import SwanLabLogger
+
+        swanlab_config = {"UPPERFRAMEWORK": "DiffSynth-Studio"}
+        swanlab_config.update(vars(args))
+        swanlab_logger = SwanLabLogger(
+            project="wan",
+            name="wan",
+            config=swanlab_config,
+            mode=args.swanlab_mode,
+            logdir=os.path.join(args.output_path, "swanlog"),
+        )
+        logger = [swanlab_logger]
+    else:
+        logger = None
+
+    # wandb.config.update(vars(args))
+    # logger = wandb_logger
+    trainer = pl.Trainer(
+        max_epochs=args.max_epochs,
+        accelerator="gpu",
+        devices="auto",
+        precision="bf16",
+        strategy=args.training_strategy,
+        default_root_dir=run_dir,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
+        logger=wandb_logger,
+        log_every_n_steps=1,
+        # gradient_clip_val=0.5,  # clip 阈值
+        # gradient_clip_algorithm="norm",
         num_sanity_val_steps=1,
         limit_val_batches=1,
     )
@@ -994,3 +1104,5 @@ if __name__ == "__main__":
         data_process(args)
     elif args.task == "train":
         train(args)
+    elif args.task == "inference":
+        inference(args)
