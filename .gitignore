@@ -15,3 +15,7 @@ diffsynth.egg-info
 *.msc
 *.pt
 minerl*
+*.png
+*.jpg
+*.JPG
+*.model

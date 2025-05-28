@@ -402,14 +402,15 @@ class LightningModelForTrain(pl.LightningModule):
         if dit_path != None:
             if os.path.exists(dit_path):
                 model_manager.load_models([vae_path, dit_path])
+            else:
+                dit_path = dit_path.split(",")
+                model_manager.load_models([vae_path, dit_path])
         elif dit_path == None:
             if trained_dit_path != None:
                 model_manager.load_models([vae_path, trained_dit_path])
             else:
                 raise Exception("at least provide dit path or trained dit path")
-        else:
-            dit_path = dit_path.split(",")
-            model_manager.load_models([vae_path, dit_path])
+
         self.run_dir = run_dir
         self.pipe = WanVideoPipeline.from_model_manager(model_manager)
         self.pipe.scheduler.set_timesteps(1000, training=True)

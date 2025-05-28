@@ -34,13 +34,13 @@
  --train_architecture full \
  --dataset_path "/workspace/DiffSynth-Studio/epic" \
  --output_path ./log \
- --dit_path /root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/diffusion_pytorch_model.safetensors \
- --image_encoder_path /root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
- --vae_path /root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/Wan2.1_VAE.pth \
- --steps_per_epoch 10000 \
+ --dit_path "models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00001-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00002-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00003-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00004-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00005-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00006-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00007-of-00007.safetensors" \
+ --image_encoder_path models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
+ --vae_path "models/Wan-AI/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth" \
+ --steps_per_epoch 2000 \
  --max_epochs 100 \
- --learning_rate 1e-5 \
- --accumulate_grad_batches 8 \
+ --learning_rate 1e-4 \
+ --accumulate_grad_batches 4 \
  --use_gradient_checkpointing \
  --num_frames 193 \
  --dataloader_num_workers 25

@@ -591,45 +591,46 @@ class ModelManager:
         else:
             state_dict = None
         for model_detector in self.model_detector:
-            if file_path.endswith(".ckpt"):
-                from .wan_video_dit import WanModel
-                import json
+            if not isinstance(file_path, list):
+                if file_path.endswith(".ckpt"):
+                    from .wan_video_dit import WanModel
+                    import json
 
-                with open(
-                    "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/config.json",
-                    "r",
-                ) as config_reader:
-                    model_init_config = json.load(config_reader)
-                model_init_config = {
-                    "has_image_input": True,
-                    "patch_size": [1, 2, 2],
-                    "in_dim": 36,
-                    "dim": 1536,
-                    "ffn_dim": 8960,
-                    "freq_dim": 256,
-                    "text_dim": 4096,
-                    "out_dim": 16,
-                    "num_heads": 12,
-                    "num_layers": 30,
-                    "eps": 1e-6,
-                }
-                models = [WanModel(**model_init_config)]
-                model_names = ["wan_video_dit"]
-                # tmp_state_dict = load_state_dict(self.backup_wan_dit)
-                # model_names, models = model_detector.load(
-                #     self.backup_wan_dit,
-                #     tmp_state_dict,
-                #     device=device,
-                #     torch_dtype=torch_dtype,
-                #     allowed_model_names=model_names,
-                #     model_manager=self,
-                # )
-                models[0].load_state_dict(state_dict, strict=True)
-                for model_name, model in zip(model_names, models):
-                    self.model.append(model)
-                    self.model_path.append(file_path)
-                    self.model_name.append(model_name)
-                break
+                    with open(
+                        "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/config.json",
+                        "r",
+                    ) as config_reader:
+                        model_init_config = json.load(config_reader)
+                    model_init_config = {
+                        "has_image_input": True,
+                        "patch_size": [1, 2, 2],
+                        "in_dim": 36,
+                        "dim": 1536,
+                        "ffn_dim": 8960,
+                        "freq_dim": 256,
+                        "text_dim": 4096,
+                        "out_dim": 16,
+                        "num_heads": 12,
+                        "num_layers": 30,
+                        "eps": 1e-6,
+                    }
+                    models = [WanModel(**model_init_config)]
+                    model_names = ["wan_video_dit"]
+                    # tmp_state_dict = load_state_dict(self.backup_wan_dit)
+                    # model_names, models = model_detector.load(
+                    #     self.backup_wan_dit,
+                    #     tmp_state_dict,
+                    #     device=device,
+                    #     torch_dtype=torch_dtype,
+                    #     allowed_model_names=model_names,
+                    #     model_manager=self,
+                    # )
+                    models[0].load_state_dict(state_dict, strict=True)
+                    for model_name, model in zip(model_names, models):
+                        self.model.append(model)
+                        self.model_path.append(file_path)
+                        self.model_name.append(model_name)
+                    break
             if model_detector.match(file_path, state_dict):
                 model_names, models = model_detector.load(
                     file_path,
