@@ -419,6 +419,7 @@ class WanModel(torch.nn.Module):
         num_layers: int,
         has_image_input: bool,
         has_image_pos_emb: bool = False,
+        **kwargs
     ):
         super().__init__()
         self.dim = dim

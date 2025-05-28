@@ -296,10 +296,23 @@ class TensorDataset(torch.utils.data.Dataset):
 
     # TODO: RGB2BGR
     def __getitem__(self, index):
-        data_id = torch.randint(0, len(self.path), (1,))[0]
+        data_id = (
+            torch.randint(0, len(self.path), (1,))[0] if not self.is_val_dataset else 0
+        )
         data_id = (data_id + index) % len(self.path)  # For fixed seed.
         path = self.path[data_id]
         data = torch.load(path, weights_only=True, map_location="cpu")
+        if self.is_val_dataset:
+            context_data_id = torch.randint(0, len(self.path), (1,))[0]
+            context_data_id = (context_data_id + index) % len(
+                self.path
+            )  # For fixed seed.
+            context_path = self.path[context_data_id]
+            context_data = torch.load(
+                context_path, weights_only=True, map_location="cpu"
+            )
+            data["prompt_emb"] = context_data["prompt_emb"]
+            # data['image_emb']
         generating_first_idx = random.randint(
             1, self.episode_length - 1 - self.latent_window_size
         )
@@ -355,7 +368,7 @@ class TensorDataset(torch.utils.data.Dataset):
         data["clean_latents_2x"] = clean_latents_2x
         data["clean_latents"] = clean_latents
         data["latents"] = latents
-        data["path"] = path
+        data["path"] = path if not self.is_val_dataset else context_path
         return data
 
     def read_latent(self, latents, read_indices):
@@ -373,6 +386,7 @@ class LightningModelForTrain(pl.LightningModule):
         dit_path,
         vae_path,
         run_dir,
+        trained_dit_path=None,
         learning_rate=1e-5,
         lora_rank=4,
         lora_alpha=4,
@@ -385,8 +399,14 @@ class LightningModelForTrain(pl.LightningModule):
     ):
         super().__init__()
         model_manager = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
-        if os.path.isfile(dit_path):
-            model_manager.load_models([vae_path, dit_path])
+        if dit_path != None:
+            if os.path.exists(dit_path):
+                model_manager.load_models([vae_path, dit_path])
+        elif dit_path == None:
+            if trained_dit_path != None:
+                model_manager.load_models([vae_path, trained_dit_path])
+            else:
+                raise Exception("at least provide dit path or trained dit path")
         else:
             dit_path = dit_path.split(",")
             model_manager.load_models([vae_path, dit_path])
@@ -1004,7 +1024,9 @@ def train(args):
         strategy=args.training_strategy,
         default_root_dir=run_dir,
         accumulate_grad_batches=args.accumulate_grad_batches,
-        callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
+        callbacks=[
+            pl.pytorch.callbacks.ModelCheckpoint(save_last=True, every_n_epochs=5)
+        ],
         logger=wandb_logger,
         log_every_n_steps=1,
         # gradient_clip_val=0.5,  # clip 阈值
@@ -1048,6 +1070,7 @@ def inference(args):
     update_config(wandb_logger, vars(args))
 
     model = LightningModelForTrain(
+        trained_dit_path=args.trained_dit_path,
         dit_path=args.dit_path,
         vae_path=args.vae_path,
         run_dir=run_dir,
@@ -1092,6 +1115,7 @@ def inference(args):
         log_every_n_steps=1,
         # gradient_clip_val=0.5,  # clip 阈值
         # gradient_clip_algorithm="norm",
+        limit_train_batches=0,
         num_sanity_val_steps=1,
         limit_val_batches=1,
     )
