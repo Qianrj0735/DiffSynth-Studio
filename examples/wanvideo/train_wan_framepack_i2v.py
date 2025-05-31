@@ -390,6 +390,7 @@ class LightningModelForTrain(pl.LightningModule):
         learning_rate=1e-5,
         lora_rank=4,
         lora_alpha=4,
+        num_validation_blocks=5,
         train_architecture="lora",
         lora_target_modules="q,k,v,o,ffn.0,ffn.2",
         init_lora_weights="kaiming",
@@ -402,7 +403,7 @@ class LightningModelForTrain(pl.LightningModule):
         if dit_path != None:
             if os.path.exists(dit_path):
                 model_manager.load_models([vae_path, dit_path])
-            else:
+            elif "," in dit_path:
                 dit_path = dit_path.split(",")
                 model_manager.load_models([vae_path, dit_path])
         elif dit_path == None:
@@ -430,6 +431,7 @@ class LightningModelForTrain(pl.LightningModule):
         self.learning_rate = learning_rate
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+        self.num_validation_blocks = num_validation_blocks
 
     def freeze_parameters(self):
         # Freeze parameters
@@ -603,7 +605,7 @@ class LightningModelForTrain(pl.LightningModule):
         if "y" in image_emb:
             image_emb["y"] = image_emb["y"][0].to(self.device)
 
-        for section_index in tqdm(range(5)):
+        for section_index in tqdm(range(self.num_validation_blocks)):
             clean_latents_4x, clean_latents_2x, clean_latents_1x = history_latents[
                 :, :, -sum([16, 2, 1]) :, :, :
             ].split([16, 2, 1], dim=2)
@@ -653,7 +655,7 @@ class LightningModelForTrain(pl.LightningModule):
         )
         self.pipe.load_models_to_device(["vae"])
         frames = self.pipe.decode_video(
-            history_latents[:, :, 16 + 2 + 1 :], **tiler_kwargs
+            history_latents[:, :, 16 + 2 + 1 :].to(torch.bfloat16), **tiler_kwargs
         )
         self.pipe.load_models_to_device([])
         frames = self.pipe.tensor2video(frames[0])
@@ -841,6 +843,12 @@ def parse_args():
         help="The weight of the LoRA update matrices.",
     )
     parser.add_argument(
+        "--num_validation_blocks",
+        type=int,
+        default=5,
+        help="num_validation_blocks",
+    )
+    parser.add_argument(
         "--use_gradient_checkpointing",
         default=False,
         action="store_true",
@@ -989,6 +997,7 @@ def train(args):
         dit_path=args.dit_path,
         vae_path=args.vae_path,
         run_dir=run_dir,
+        trained_dit_path=args.trained_dit_path,
         learning_rate=args.learning_rate,
         train_architecture=args.train_architecture,
         lora_rank=args.lora_rank,
@@ -998,6 +1007,7 @@ def train(args):
         use_gradient_checkpointing=args.use_gradient_checkpointing,
         use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
         pretrained_lora_path=args.pretrained_lora_path,
+        num_validation_blocks=args.num_validation_blocks,
     )
     if args.use_swanlab:
         from swanlab.integration.pytorch_lightning import SwanLabLogger

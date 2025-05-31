@@ -32,9 +32,9 @@
  CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python examples/wanvideo/train_wan_framepack_i2v.py \
  --task train \
  --train_architecture full \
- --dataset_path "/workspace/DiffSynth-Studio/epic" \
+ --dataset_path "epic" \
  --output_path ./log \
- --dit_path "models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00001-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00002-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00003-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00004-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00005-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00006-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00007-of-00007.safetensors" \
+ --trained_dit_path "logs/Framepack_reproduce/2025_05_30_01_42_lr_0.0001_bsz_32_eplen_2000/checkpoints/last.ckpt/checkpoint/mp_rank_00_model_states.pt" \
  --image_encoder_path models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
  --vae_path "models/Wan-AI/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth" \
  --steps_per_epoch 2000 \
@@ -43,4 +43,6 @@
  --accumulate_grad_batches 4 \
  --use_gradient_checkpointing \
  --num_frames 193 \
- --dataloader_num_workers 25
+ --dataloader_num_workers 25 \
+ --use_gradient_checkpointing_offload \
+ --training_strategy deepspeed_stage_2

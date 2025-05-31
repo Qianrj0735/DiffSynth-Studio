@@ -592,7 +592,7 @@ class ModelManager:
             state_dict = None
         for model_detector in self.model_detector:
             if not isinstance(file_path, list):
-                if file_path.endswith(".ckpt"):
+                if file_path.endswith(".ckpt") or file_path.endswith(".pt"):
                     from .wan_video_dit import WanModel
                     import json
 
@@ -604,15 +604,17 @@ class ModelManager:
                     model_init_config = {
                         "has_image_input": True,
                         "patch_size": [1, 2, 2],
-                        "in_dim": 36,
-                        "dim": 1536,
-                        "ffn_dim": 8960,
-                        "freq_dim": 256,
                         "text_dim": 4096,
+                        "dim": 5120,
+                        "eps": 1e-06,
+                        "ffn_dim": 13824,
+                        "freq_dim": 256,
+                        "in_dim": 36,
+                        "model_type": "i2v",
+                        "num_heads": 40,
+                        "num_layers": 40,
                         "out_dim": 16,
-                        "num_heads": 12,
-                        "num_layers": 30,
-                        "eps": 1e-6,
+                        "text_len": 512,
                     }
                     models = [WanModel(**model_init_config)]
                     model_names = ["wan_video_dit"]
@@ -625,7 +627,7 @@ class ModelManager:
                     #     allowed_model_names=model_names,
                     #     model_manager=self,
                     # )
-                    models[0].load_state_dict(state_dict, strict=True)
+                    models[0].load_state_dict(state_dict, strict=False)
                     for model_name, model in zip(model_names, models):
                         self.model.append(model)
                         self.model_path.append(file_path)
