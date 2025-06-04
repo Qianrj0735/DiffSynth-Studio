@@ -603,18 +603,18 @@ class ModelManager:
                         model_init_config = json.load(config_reader)
                     model_init_config = {
                         "has_image_input": True,
-                        "patch_size": [1, 2, 2],
-                        "text_dim": 4096,
-                        "dim": 5120,
+                        "dim": 1536,
                         "eps": 1e-06,
-                        "ffn_dim": 13824,
+                        "ffn_dim": 8960,
                         "freq_dim": 256,
                         "in_dim": 36,
                         "model_type": "i2v",
-                        "num_heads": 40,
-                        "num_layers": 40,
+                        "num_heads": 12,
+                        "num_layers": 30,
                         "out_dim": 16,
                         "text_len": 512,
+                        "patch_size": [1, 2, 2],
+                        "text_dim": 4096,
                     }
                     models = [WanModel(**model_init_config)]
                     model_names = ["wan_video_dit"]

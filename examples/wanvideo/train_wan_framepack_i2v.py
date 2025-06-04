@@ -277,6 +277,7 @@ class TensorDataset(torch.utils.data.Dataset):
         latent_window_size=9,
         is_val_dataset=False,
     ):
+        # 读取metadata文件
         metadata = pd.read_csv(metadata_path)
         self.path = [
             os.path.join(base_path, "train", file_name)
@@ -284,6 +285,7 @@ class TensorDataset(torch.utils.data.Dataset):
         ]
         print(len(self.path), "videos in metadata.")
         self.path = [
+        # 获取缓存文件路径
             i + ".tensors.pth" for i in self.path if os.path.exists(i + ".tensors.pth")
         ]
         print(len(self.path), "tensors cached in metadata.")
@@ -291,15 +293,18 @@ class TensorDataset(torch.utils.data.Dataset):
 
         self.steps_per_epoch = steps_per_epoch
         self.episode_length = (episode_length_real - 1) // 4
+        # 计算episode长度
         self.latent_window_size = latent_window_size
         self.is_val_dataset = is_val_dataset
 
     # TODO: RGB2BGR
     def __getitem__(self, index):
         data_id = (
+        # 如果不是验证集，则随机选择一个数据id
             torch.randint(0, len(self.path), (1,))[0] if not self.is_val_dataset else 0
         )
         data_id = (data_id + index) % len(self.path)  # For fixed seed.
+        # 计算数据id
         path = self.path[data_id]
         data = torch.load(path, weights_only=True, map_location="cpu")
         if self.is_val_dataset:
@@ -614,11 +619,14 @@ class LightningModelForTrain(pl.LightningModule):
             )
             # latents
             clean_latent_kwargs = {
-                "clean_latent_indices_start": clean_latent_indices_start,
-                "clean_latent_4x_indices": clean_latent_4x_indices,
-                "clean_latent_2x_indices": clean_latent_2x_indices,
-                "clean_latent_indices": clean_latent_indices,
-                "latent_indices": latent_indices,
+                "clean_latent_indices_start": clean_latent_indices_start
+                + (section_index * 9),
+                "clean_latent_4x_indices": clean_latent_4x_indices
+                + (section_index * 9),
+                "clean_latent_2x_indices": clean_latent_2x_indices
+                + (section_index * 9),
+                "clean_latent_indices": clean_latent_indices + (section_index * 9),
+                "latent_indices": latent_indices + (section_index * 9),
                 "start_latent": start_latent,
                 "clean_latents_4x": clean_latents_4x,
                 "clean_latents_2x": clean_latents_2x,

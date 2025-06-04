@@ -20,6 +20,8 @@ import torch.distributed as dist
 from tabulate import tabulate
 import wandb
 import yaml
+from dataset import TensorHierachicalDataset
+import shutil
 
 
 def set_seed(seed: int = 42):
@@ -265,119 +267,6 @@ class LightningModelForDataProcess(pl.LightningModule):
                 "image_emb": image_emb,
             }
             torch.save(data, path + ".tensors.pth")
-
-
-class TensorDataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        base_path,
-        metadata_path,
-        steps_per_epoch,
-        episode_length_real=385,
-        latent_window_size=9,
-        is_val_dataset=False,
-    ):
-        metadata = pd.read_csv(metadata_path)
-        self.path = [
-            os.path.join(base_path, "train", file_name)
-            for file_name in metadata["file_name"]
-        ]
-        print(len(self.path), "videos in metadata.")
-        self.path = [
-            i + ".tensors.pth" for i in self.path if os.path.exists(i + ".tensors.pth")
-        ]
-        print(len(self.path), "tensors cached in metadata.")
-        assert len(self.path) > 0
-
-        self.steps_per_epoch = steps_per_epoch
-        self.episode_length = (episode_length_real - 1) // 4
-        self.latent_window_size = latent_window_size
-        self.is_val_dataset = is_val_dataset
-
-    # TODO: RGB2BGR
-    def __getitem__(self, index):
-        data_id = (
-            torch.randint(0, len(self.path), (1,))[0] if not self.is_val_dataset else 0
-        )
-        data_id = (data_id + index) % len(self.path)  # For fixed seed.
-        path = self.path[data_id]
-        data = torch.load(path, weights_only=True, map_location="cpu")
-        if self.is_val_dataset:
-            context_data_id = torch.randint(0, len(self.path), (1,))[0]
-            context_data_id = (context_data_id + index) % len(
-                self.path
-            )  # For fixed seed.
-            context_path = self.path[context_data_id]
-            context_data = torch.load(
-                context_path, weights_only=True, map_location="cpu"
-            )
-            data["prompt_emb"] = context_data["prompt_emb"]
-            # data['image_emb']
-        generating_first_idx = random.randint(
-            1, self.episode_length - 1 - self.latent_window_size
-        )
-        if self.is_val_dataset:
-            generating_first_idx = 1
-        generating_indices = torch.arange(
-            generating_first_idx, generating_first_idx + self.latent_window_size
-        )
-        indices = torch.arange(
-            0, sum([1, 16, 2, 1, self.latent_window_size])
-        ).unsqueeze(0)
-        (
-            clean_latent_indices_start,
-            clean_latent_4x_indices,
-            clean_latent_2x_indices,
-            clean_latent_1x_indices,
-            latent_indices,
-        ) = indices.split([1, 16, 2, 1, self.latent_window_size], dim=1)
-        read_clean_latent_indices_start = 0
-        # TODO: see see hunyuan
-        read_clean_latent_4x_indices = (
-            np.array(clean_latent_4x_indices[0]) - 20 + generating_first_idx
-        )
-        read_clean_latent_2x_indices = (
-            np.array(clean_latent_2x_indices[0]) - 20 + generating_first_idx
-        )
-        read_clean_latent_1x_indices = (
-            np.array(clean_latent_1x_indices[0]) - 20 + generating_first_idx
-        )
-
-        clean_latents_4x = self.read_latent(
-            data["latents"], read_clean_latent_4x_indices
-        )
-        clean_latents_2x = self.read_latent(
-            data["latents"], read_clean_latent_2x_indices
-        )
-        clean_latents_1x = self.read_latent(
-            data["latents"], read_clean_latent_1x_indices
-        )
-        latents = self.read_latent(data["latents"], generating_indices)
-        start_latent = self.read_latent(data["latents"], np.zeros(1))
-        clean_latents = torch.cat((start_latent, clean_latents_1x), dim=1)
-        clean_latent_indices = torch.cat(
-            [clean_latent_indices_start, clean_latent_1x_indices], dim=1
-        )
-        data["clean_latent_indices_start"] = clean_latent_indices_start
-        data["clean_latent_4x_indices"] = clean_latent_4x_indices
-        data["clean_latent_2x_indices"] = clean_latent_2x_indices
-        data["clean_latent_indices"] = clean_latent_indices
-        data["latent_indices"] = latent_indices
-        data["start_latent"] = start_latent
-        data["clean_latents_4x"] = clean_latents_4x
-        data["clean_latents_2x"] = clean_latents_2x
-        data["clean_latents"] = clean_latents
-        data["latents"] = latents
-        data["path"] = path if not self.is_val_dataset else context_path
-        return data
-
-    def read_latent(self, latents, read_indices):
-        clean_latent = torch.zeros_like(latents[:, : len(read_indices)])
-        clean_latent[:, read_indices >= 0] = latents[:, read_indices[read_indices >= 0]]
-        return clean_latent
-
-    def __len__(self):
-        return self.steps_per_epoch
 
 
 class LightningModelForTrain(pl.LightningModule):
@@ -874,6 +763,24 @@ def parse_args():
         help="Pretrained LoRA path. Required if the training is resumed.",
     )
     parser.add_argument(
+        "--s_path",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
+        "--xs_path",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
+        "--predict_config",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
         "--use_swanlab",
         default=False,
         action="store_true",
@@ -961,19 +868,54 @@ def update_config(logger, config_dict):
     logger.experiment.config.update(config_dict, allow_val_change=True)
 
 
+@rank_zero_only
+def get_folder_size(folder_path):
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(folder_path):
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+            total_size += os.path.getsize(file_path)
+    return total_size
+
+
+@rank_zero_only
+def delete_folders_under_size(root_folder, min_size=5):
+    min_size = min_size * 1024 * 1024
+    for dirpath, dirnames, filenames in os.walk(root_folder):
+        for dirname in dirnames:
+            if dirname == "tensorboard_logs":
+                continue
+            folder_path = os.path.join(dirpath, dirname)
+            folder_size = get_folder_size(folder_path)
+            if folder_size < min_size:
+                print(f"Deleting folder: {folder_path}")
+                try:
+                    shutil.rmtree(folder_path)
+                    print(f"Folder {folder_path} deleted successfully!")
+                except OSError as e:
+                    print(f"Error deleting folder {folder_path}: {e}")
+
+
 def train(args):
+    delete_folders_under_size(args.output_path)
     set_seed(3407)
-    dataset = TensorDataset(
-        args.dataset_path,
-        os.path.join(args.dataset_path, "metadata.csv"),
+    dataset = TensorHierachicalDataset(
+        base_path=args.dataset_path,
+        metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        s_path=args.s_path,
+        xs_path=args.xs_path,
+        predict_config=args.predict_config,
     )
-    val_dataset = TensorDataset(
-        args.dataset_path,
-        os.path.join(args.dataset_path, "metadata.csv"),
+    val_dataset = TensorHierachicalDataset(
+        base_path=args.dataset_path,
+        metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        s_path=args.s_path,
+        xs_path=args.xs_path,
+        predict_config=args.predict_config,
         is_val_dataset=True,
     )
     # trainset, valset = random_split(dataset, [0.9, 0.1])
@@ -987,6 +929,8 @@ def train(args):
         batch_size=1,
         num_workers=args.dataloader_num_workers,
     )
+
+    setattr(args, "predict_config", dataset.predict_config)
     wandb_logger, run_dir, run_name = init_wandb_logger(args)
     # name_holder = [wandb_logger, run_name, run_dir]
     # dist.broadcast_object_list(name_holder, src=0)
@@ -1009,21 +953,21 @@ def train(args):
         pretrained_lora_path=args.pretrained_lora_path,
         num_validation_blocks=args.num_validation_blocks,
     )
-    if args.use_swanlab:
-        from swanlab.integration.pytorch_lightning import SwanLabLogger
+    # if args.use_swanlab:
+    #     from swanlab.integration.pytorch_lightning import SwanLabLogger
 
-        swanlab_config = {"UPPERFRAMEWORK": "DiffSynth-Studio"}
-        swanlab_config.update(vars(args))
-        swanlab_logger = SwanLabLogger(
-            project="wan",
-            name="wan",
-            config=swanlab_config,
-            mode=args.swanlab_mode,
-            logdir=os.path.join(args.output_path, "swanlog"),
-        )
-        logger = [swanlab_logger]
-    else:
-        logger = None
+    #     swanlab_config = {"UPPERFRAMEWORK": "DiffSynth-Studio"}
+    #     swanlab_config.update(vars(args))
+    #     swanlab_logger = SwanLabLogger(
+    #         project="wan",
+    #         name="wan",
+    #         config=swanlab_config,
+    #         mode=args.swanlab_mode,
+    #         logdir=os.path.join(args.output_path, "swanlog"),
+    #     )
+    #     logger = [swanlab_logger]
+    # else:
+    #     logger = None
 
     # wandb.config.update(vars(args))
     # logger = wandb_logger
@@ -1050,17 +994,23 @@ def train(args):
 
 def inference(args):
     set_seed(3407)
-    dataset = TensorDataset(
-        args.dataset_path,
-        os.path.join(args.dataset_path, "metadata.csv"),
+    dataset = TensorHierachicalDataset(
+        base_path=args.dataset_path,
+        metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        s_path=args.s_path,
+        xs_path=args.xs_path,
+        predict_config=args.predict_config,
     )
-    val_dataset = TensorDataset(
-        args.dataset_path,
-        os.path.join(args.dataset_path, "metadata.csv"),
+    val_dataset = TensorHierachicalDataset(
+        base_path=args.dataset_path,
+        metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        s_path=args.s_path,
+        xs_path=args.xs_path,
+        predict_config=args.predict_config,
         is_val_dataset=True,
     )
     # trainset, valset = random_split(dataset, [0.9, 0.1])
