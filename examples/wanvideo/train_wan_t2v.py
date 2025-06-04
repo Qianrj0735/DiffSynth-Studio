@@ -159,6 +159,7 @@ class LightningModelForDataProcess(pl.LightningModule):
         vae_path,
         image_encoder_path=None,
         tiled=False,
+        output_dir=None,
         tile_size=(34, 34),
         tile_stride=(18, 16),
     ):
@@ -169,7 +170,8 @@ class LightningModelForDataProcess(pl.LightningModule):
         model_manager = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
         model_manager.load_models(model_path)
         self.pipe = WanVideoPipeline.from_model_manager(model_manager)
-
+        os.makedirs(output_dir, exist_ok=True)
+        self.output_dir = output_dir
         self.tiler_kwargs = {
             "tiled": tiled,
             "tile_size": tile_size,
@@ -182,6 +184,13 @@ class LightningModelForDataProcess(pl.LightningModule):
         self.pipe.device = self.device
         if video is not None:
             # prompt
+            if self.output_dir != None:
+                p = path.split("/")[-1]
+                saving = os.path.join(self.output_dir, p + ".tensors.pth")
+            else:
+                saving = path + ".tensors.pth"
+            print(f"saving to {saving}")
+            # exit()
             prompt_emb = self.pipe.encode_prompt(text)
             # video
             video = video.to(dtype=self.pipe.torch_dtype, device=self.pipe.device)
@@ -189,6 +198,7 @@ class LightningModelForDataProcess(pl.LightningModule):
             # image
             if "first_frame" in batch:
                 first_frame = Image.fromarray(batch["first_frame"][0].cpu().numpy())
+                first_frame.save(saving[:-3] + "jpg")
                 _, _, num_frames, height, width = video.shape
                 image_emb = self.pipe.encode_image(
                     first_frame, None, num_frames, height, width
@@ -200,7 +210,7 @@ class LightningModelForDataProcess(pl.LightningModule):
                 "prompt_emb": prompt_emb,
                 "image_emb": image_emb,
             }
-            torch.save(data, path + ".tensors.pth")
+            torch.save(data, saving)
 
 
 class TensorDataset(torch.utils.data.Dataset):
@@ -225,8 +235,8 @@ class TensorDataset(torch.utils.data.Dataset):
         path = self.path[data_id]
         clip_idx = ((self.num_frames - 1) // 4) + 1
         data = torch.load(path, weights_only=True, map_location="cpu")
-        data["latents"] = data["latents"][:, :clip_idx]
-        data["image_emb"]["y"] = data["image_emb"]["y"][:, :, :clip_idx]
+        data["latents"] = data["latents"][:, :clip_idx, 18:-18, 46:-46]
+        data["image_emb"]["y"] = data["image_emb"]["y"][:, :, :clip_idx, 18:-18, 46:-46]
         return data
 
     def __len__(self):
@@ -409,6 +419,12 @@ def parse_args():
         type=str,
         default="./",
         help="Path to save the model.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Path to rewrite the saving path of pths when data processing",
     )
     parser.add_argument(
         "--text_encoder_path",
@@ -602,6 +618,7 @@ def data_process(args):
         text_encoder_path=args.text_encoder_path,
         image_encoder_path=args.image_encoder_path,
         vae_path=args.vae_path,
+        output_dir=args.output_dir,
         tiled=args.tiled,
         tile_size=(args.tile_size_height, args.tile_size_width),
         tile_stride=(args.tile_stride_height, args.tile_stride_width),
@@ -659,7 +676,7 @@ def train(args):
         strategy=args.training_strategy,
         default_root_dir=args.output_path,
         accumulate_grad_batches=args.accumulate_grad_batches,
-        callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_top_k=-1)],
+        callbacks=[pl.pytorch.callbacks.ModelCheckpoint(save_last=True, save_top_k=0)],
         logger=logger,
     )
     trainer.fit(model, dataloader)

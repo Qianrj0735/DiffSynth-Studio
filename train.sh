@@ -5,8 +5,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python examples/wanvideo/train_wan_t2v.py
  --output_path ./log \
  --dit_path "models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00001-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00002-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00003-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00004-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00005-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00006-of-00007.safetensors,models/Wan-AI/Wan2.1-I2V-14B-480P/diffusion_pytorch_model-00007-of-00007.safetensors" \
  --image_encoder_path models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
- --vae_path "models/Wan-AI/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth" \
- --steps_per_epoch 100 \
+ --steps_per_epoch 20000 \
  --max_epochs 100 \
  --learning_rate 1e-4 \
  --accumulate_grad_batches 4 \
@@ -14,4 +13,4 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python examples/wanvideo/train_wan_t2v.py
  --num_frames 81 \
  --dataloader_num_workers 25 \
  --use_gradient_checkpointing_offload \
- --training_strategy deepspeed_stage_3
+ --training_strategy deepspeed_stage_2
