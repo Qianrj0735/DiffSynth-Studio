@@ -29,20 +29,22 @@
 #  --use_gradient_checkpointing \
 #  --num_frames 385 \
 #  --dataloader_num_workers 25
- CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python examples/wanvideo/train_wan_framepack_i2v.py \
+ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" python examples/wanvideo/train_wan_future_fmpk.py \
  --task train \
  --train_architecture full \
  --dataset_path "epic" \
  --output_path ./log \
- --trained_dit_path "logs/Framepack_reproduce/2025_05_30_01_42_lr_0.0001_bsz_32_eplen_2000/checkpoints/last.ckpt/checkpoint/mp_rank_00_model_states.pt" \
- --image_encoder_path models/Wan-AI/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
- --vae_path "models/Wan-AI/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth" \
- --steps_per_epoch 2000 \
+ --dit_path logs/Framepack_reproduce/2025_06_04_21_39_lr_0.0001_bsz_32_eplen_10000/checkpoints/last.ckpt \
+ --image_encoder_path /root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
+ --vae_path "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/Wan2.1_VAE.pth" \
+ --steps_per_epoch 10000 \
  --max_epochs 100 \
  --learning_rate 1e-4 \
  --accumulate_grad_batches 4 \
  --use_gradient_checkpointing \
  --num_frames 193 \
  --dataloader_num_workers 25 \
- --use_gradient_checkpointing_offload \
- --training_strategy deepspeed_stage_2
+ --s_path epic_s \
+ --xs_path epic_xs \
+ --predict_config /home/workspace/DiffSynth-Studio/examples/wanvideo/predict_pack_configs/9hrz45.yml \
+ --predicting_indice "0,1,2,3,4,5"

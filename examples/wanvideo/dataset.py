@@ -7,6 +7,7 @@ import yaml
 from utils import *
 from einops import rearrange
 
+
 class TensorHierachicalDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -106,7 +107,7 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
             data["latents"], read_clean_latent_1x_indices
         )
         # latents = self.read_latent(data["latents"], generating_indices)
-        latents_and_indices = self.read_packed_latent(
+        latents, latents_indice_info = self.read_packed_latent(
             {"m": data["latents"], "s": data_s["latents"], "xs": data_xs["latents"]},
             generating_indices,
         )
@@ -131,7 +132,8 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         data["clean_latents_4x"] = clean_latents_4x
         data["clean_latents_2x"] = clean_latents_2x
         data["clean_latents"] = clean_latents
-        data["latents_and_indices"] = latents_and_indices
+        data["latents"] = latents
+        data["latents_indice_info"] = latents_indice_info
         data["path"] = path if not self.is_val_dataset else context_path
         return data
 
@@ -146,12 +148,22 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
                 latents_dict[mode],
                 np.array(read_indices),
             )
-            if mode == 's':
+            if mode == "s":
                 l = rearrange(l, "b (p1 p2) h w -> b 1 (h p1) (w p2)", p1=2, p2=2)
-            elif mode == 'xs':
+            elif mode == "xs":
                 l = rearrange(l, "b (p1 p2) h w -> b 1 (h p1) (w p2)", p1=4, p2=4)
-            read_blocks[i] = {"latents": l, "indices": read_indices}
-        return read_blocks
+            read_blocks[i] = {"latents": l, "indices": read_indices, "mode": mode}
+        return self.post_read_blocks(read_blocks)
+
+    def post_read_blocks(self, read_blocks):
+        string_info = ""
+        latents = []
+        for k, v in read_blocks.items():
+            latents.append(v["latents"])
+            for ind in v["indices"]:
+                string_info += f"{v['mode']}_{ind},"
+            string_info += "|"
+        return torch.cat(latents, dim=1), string_info
 
     def read_latent(self, latents, read_indices):
         clean_latent = torch.zeros_like(latents[:, : len(read_indices)])

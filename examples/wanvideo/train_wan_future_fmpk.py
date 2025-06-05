@@ -286,6 +286,7 @@ class LightningModelForTrain(pl.LightningModule):
         use_gradient_checkpointing=True,
         use_gradient_checkpointing_offload=False,
         pretrained_lora_path=None,
+        args=None,
     ):
         super().__init__()
         model_manager = ModelManager(torch_dtype=torch.bfloat16, device="cpu")
@@ -321,6 +322,7 @@ class LightningModelForTrain(pl.LightningModule):
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
         self.num_validation_blocks = num_validation_blocks
+        self.args = args
 
     def freeze_parameters(self):
         # Freeze parameters
@@ -396,7 +398,7 @@ class LightningModelForTrain(pl.LightningModule):
         clean_latent_4x_indices = batch["clean_latent_4x_indices"].to(self.device)
         clean_latent_2x_indices = batch["clean_latent_2x_indices"].to(self.device)
         clean_latent_indices = batch["clean_latent_indices"].to(self.device)
-        latent_indices = batch["latent_indices"].to(self.device)
+        latents_indice_info = batch["latents_indice_info"]
         start_latent = batch["start_latent"].to(self.device)
         clean_latents_4x = batch["clean_latents_4x"].to(self.device)
         clean_latents_2x = batch["clean_latents_2x"].to(self.device)
@@ -415,7 +417,7 @@ class LightningModelForTrain(pl.LightningModule):
             clean_latent_4x_indices=clean_latent_4x_indices,
             clean_latent_2x_indices=clean_latent_2x_indices,
             clean_latent_indices=clean_latent_indices,
-            latent_indices=latent_indices,
+            latents_indice_info=latents_indice_info,
             start_latent=start_latent,
             clean_latents_4x=clean_latents_4x,
             clean_latents_2x=clean_latents_2x,
@@ -468,6 +470,9 @@ class LightningModelForTrain(pl.LightningModule):
         checkpoint.update(lora_state_dict)
 
     def validation_step(self, batch, batch_idx):
+        predicting_indice = np.array(
+            [int(ids) for ids in self.args.predicting_indice.split(",")]
+        )
         self.pipe.requires_grad_(False)
         self.pipe.eval()
         start_latent = batch["start_latent"].to(self.device)
@@ -476,7 +481,16 @@ class LightningModelForTrain(pl.LightningModule):
             dtype=torch.float32,
         ).cpu()
         history_pixels = None
-        videos = []
+        s_latents = torch.zeros(
+            size=(
+                1,
+                16,
+                16 + 2 + 1,
+                start_latent.size(-2) // 2,
+                start_latent.size(-1) // 2,
+            ),
+            dtype=torch.float32,
+        ).cpu()
         history_latents = torch.cat(
             [history_latents, start_latent.to(history_latents)], dim=2
         )
@@ -485,7 +499,7 @@ class LightningModelForTrain(pl.LightningModule):
         clean_latent_4x_indices = batch["clean_latent_4x_indices"].to(self.device)
         clean_latent_2x_indices = batch["clean_latent_2x_indices"].to(self.device)
         clean_latent_indices = batch["clean_latent_indices"].to(self.device)
-        latent_indices = batch["latent_indices"].to(self.device)
+        latents_indice_info = batch["latents_indice_info"]
         prompt_emb, image_emb = batch["prompt_emb"], batch["image_emb"]
         prompt_emb["context"] = prompt_emb["context"][0].to(self.device)
         image_emb = batch["image_emb"]
@@ -502,12 +516,15 @@ class LightningModelForTrain(pl.LightningModule):
                 [start_latent.to(history_latents), clean_latents_1x], dim=2
             )
             # latents
+            clean_latent_indices[:, :, 1] += section_index * len(predicting_indice)
             clean_latent_kwargs = {
                 "clean_latent_indices_start": clean_latent_indices_start,
-                "clean_latent_4x_indices": clean_latent_4x_indices,
-                "clean_latent_2x_indices": clean_latent_2x_indices,
+                "clean_latent_4x_indices": clean_latent_4x_indices
+                + (section_index * len(predicting_indice)),
+                "clean_latent_2x_indices": clean_latent_2x_indices
+                + (section_index * len(predicting_indice)),
                 "clean_latent_indices": clean_latent_indices,
-                "latent_indices": latent_indices,
+                "latents_indice_info": latents_indice_info,
                 "start_latent": start_latent,
                 "clean_latents_4x": clean_latents_4x,
                 "clean_latents_2x": clean_latents_2x,
@@ -531,16 +548,33 @@ class LightningModelForTrain(pl.LightningModule):
             )
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat(
-                [history_latents, generated_latents.to(history_latents)], dim=2
+                [
+                    history_latents,
+                    generated_latents[:, :, predicting_indice].to(history_latents),
+                ],
+                dim=2,
             )
-            videos.extend(video)
+            for l in range(3):
+                lat_s = generated_latents[:, :, 3 - l].to(history_latents).unsqueeze(2)
+                lat_s = rearrange(
+                    lat_s,
+                    " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
+                    p1=2,
+                    p2=2,
+                )
+                s_latents = torch.cat((s_latents, lat_s), 2)
+                # videos.append(latent)
         # print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
         # for i, v in enumerate(videos):
         #     videos[i] = np.asarray(v)
         p = batch["path"][0].replace("/", "_")
+        frames_s = self.pipe.decode_video(
+            s_latents[:, :, 16 + 2 + 1 :].to(torch.bfloat16), **tiler_kwargs
+        )
+        frames_s = self.pipe.tensor2video(frames_s[0])
         vwrite(
-            f"{self.run_dir}/{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
-            videos,
+            f"{self.run_dir}/last3_{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
+            frames_s,
         )
         self.pipe.load_models_to_device(["vae"])
         frames = self.pipe.decode_video(
@@ -781,6 +815,12 @@ def parse_args():
         help="Pretrained LoRA path. Required if the training is resumed.",
     )
     parser.add_argument(
+        "--predicting_indice",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
         "--use_swanlab",
         default=False,
         action="store_true",
@@ -952,6 +992,7 @@ def train(args):
         use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
         pretrained_lora_path=args.pretrained_lora_path,
         num_validation_blocks=args.num_validation_blocks,
+        args=args,
     )
     # if args.use_swanlab:
     #     from swanlab.integration.pytorch_lightning import SwanLabLogger

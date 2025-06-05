@@ -419,7 +419,7 @@ class WanModel(torch.nn.Module):
         num_layers: int,
         has_image_input: bool,
         has_image_pos_emb: bool = False,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.dim = dim
@@ -491,10 +491,43 @@ class WanModel(torch.nn.Module):
         rope_freqs = rearrange(rope_freqs, "f h w c -> c f h w").unsqueeze(0)
         return rope_freqs
 
+    def decipher_latents_indice_info_for_rope(self, latents_indice_info, h, w, device):
+        ropes = []
+        latents_indice_info = latents_indice_info[0].split("|")
+        for lii in latents_indice_info:
+            if lii == "":
+                continue
+            li = lii.split(",")
+            rope_block = []
+            for l in li:
+                if l == "":
+                    continue
+                mode = l.split("_")[0]
+                if mode == "m":
+                    ratio = 1
+                elif mode == "s":
+                    ratio = 2
+                elif mode == "xs":
+                    ratio = 4
+                indice = int(l.split("_")[1])
+                rope = self.retrieve_rope(
+                    torch.LongTensor([indice]).unsqueeze(0).unsqueeze(0),
+                    h // ratio,
+                    w // ratio,
+                    device,
+                )
+                rope_block.append(rope)
+            rope_block = torch.cat(rope_block, dim=2)
+            rope_block = rearrange(
+                rope_block, "b o (p1 p2) h w -> b o 1 (h p1) (w p2)", p1=ratio, p2=ratio
+            )
+            ropes.append(rope_block)
+        return torch.cat(ropes, dim=2).to(device)
+
     def process_input_hidden_states(
         self,
         latents,
-        latent_indices=None,
+        latents_indice_info=None,
         clean_latents=None,
         clean_latent_indices=None,
         clean_latents_2x=None,
@@ -507,8 +540,10 @@ class WanModel(torch.nn.Module):
         hidden_states, (f, h, w) = self.patchify(latents)
         len_latents = hidden_states.shape[1]
         # f = 29  # TODO currently hardcoded for start 1 history 19 predict 9
-        latent_indices = latent_indices.to(self.freqs[0].device)
-        rope_freqs = self.retrieve_rope(latent_indices, h, w, hidden_states.device)
+        # latent_indices = latent_indices.to(self.freqs[0].device)
+        rope_freqs = self.decipher_latents_indice_info_for_rope(
+            latents_indice_info, h, w, hidden_states.device
+        )
         rope_freqs = rope_freqs.flatten(2).transpose(1, 2)
         if clean_latents is not None and clean_latent_indices is not None:
             clean_latents = clean_latents.to(hidden_states)
@@ -579,7 +614,7 @@ class WanModel(torch.nn.Module):
         clean_latent_4x_indices: torch.Tensor = None,
         clean_latent_2x_indices: torch.Tensor = None,
         clean_latent_indices: torch.Tensor = None,
-        latent_indices: torch.Tensor = None,
+        latents_indice_info=None,
         start_latent: torch.Tensor = None,
         clean_latents_4x: torch.Tensor = None,
         clean_latents_2x: torch.Tensor = None,
@@ -602,7 +637,7 @@ class WanModel(torch.nn.Module):
             "clean_latent_4x_indices": clean_latent_4x_indices,
             "clean_latent_2x_indices": clean_latent_2x_indices,
             "clean_latent_indices": clean_latent_indices,
-            "latent_indices": latent_indices,
+            "latents_indice_info": latents_indice_info,
             "start_latent": start_latent,
             "clean_latents_4x": clean_latents_4x,
             "clean_latents_2x": clean_latents_2x,
