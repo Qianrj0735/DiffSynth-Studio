@@ -53,45 +53,45 @@ blocks:
     tensors:
       - name: t7_s1
         index:
-          fixed: 4 # 读取 x + 0 帧（即 x 帧）
+          fixed: 1 # 读取 x + 0 帧（即 x 帧）
       - name: t7_s2
         index:
-          fixed: 8 # 固定读取第 5 帧
+          fixed: 2 # 固定读取第 5 帧
       - name: t7_s3
         index:
-          fixed: 12 # 读取 x - 1 帧
+          fixed: 3 # 读取 x - 1 帧
       - name: t7_s4
         index:
-          fixed: 16 # 固定读取第 10 帧
+          fixed: 4 # 固定读取第 10 帧
 
   block8:
     mode: s
     tensors:
       - name: t8_s1
         index:
-          fixed: 20 # 读取 x + 0 帧（即 x 帧）
+          fixed: 5 # 读取 x + 0 帧（即 x 帧）
       - name: t8_s2
         index:
-          fixed: 24 # 固定读取第 5 帧
+          fixed: 6 # 固定读取第 5 帧
       - name: t8_s3
         index:
-          fixed: 28 # 读取 x - 1 帧
+          fixed: 7 # 读取 x - 1 帧
       - name: t8_s4
         index:
-          fixed: 32 # 固定读取第 10 帧
+          fixed: 8 # 固定读取第 10 帧
 
   block9:
     mode: s
     tensors:
       - name: t9_s1
         index:
-          fixed: 36 # 读取 x + 0 帧（即 x 帧）
+          fixed: 9 # 读取 x + 0 帧（即 x 帧）
       - name: t9_s2
         index:
-          fixed: 40 # 固定读取第 5 帧
+          fixed: 10 # 固定读取第 5 帧
       - name: t9_s3
         index:
-          fixed: 44 # 读取 x - 1 帧
+          fixed: 11 # 读取 x - 1 帧
       - name: t9_s4
         index:
-          fixed: 48 # 固定读取第 10 帧
+          fixed: 12 # 固定读取第 10 帧

@@ -472,24 +472,29 @@ class WanModel(torch.nn.Module):
             z=self.patch_size[2],
         )
 
-    def retrieve_rope(self, frame_indices, h, w, device):
-        frame_indices = frame_indices.to(self.freqs[0].device)
-        rope_freqs = torch.cat(
-            [
-                self.freqs[0][frame_indices[0, 0]]
-                .view(len(frame_indices[0, 0]), 1, 1, -1)
-                .expand(len(frame_indices[0, 0]), h, w, -1),
-                self.freqs[1][:h]
-                .view(1, h, 1, -1)
-                .expand(len(frame_indices[0, 0]), h, w, -1),
-                self.freqs[2][:w]
-                .view(1, 1, w, -1)
-                .expand(len(frame_indices[0, 0]), h, w, -1),
-            ],
-            dim=-1,
-        ).to(device)
-        rope_freqs = rearrange(rope_freqs, "f h w c -> c f h w").unsqueeze(0)
-        return rope_freqs
+    def retrieve_rope(self, frame_indices, h, w, device, mode="m"):
+        frame_indices = frame_indices.to(self.freqs[0].device)[0, 0]
+        rope_freqs = []
+        for frame_indice in frame_indices:
+            if mode == "m":
+                converted_frame_indice = frame_indice
+            elif mode == "s":
+                converted_frame_indice = frame_indice*4 -3
+            # splited_frame_indice = torch.clip(splited_frame_indice, -1, 1e9).int()
+            # print(f"origin:{frame_indice},mode:{mode},splited:{splited_frame_indice}")
+            rope = torch.cat(
+                [
+                    self.freqs[0][converted_frame_indice]
+                    .view(1, 1, 1, -1)
+                    .expand(1, h, w, -1),
+                    self.freqs[1][:h].view(1, h, 1, -1).expand(1, h, w, -1),
+                    self.freqs[2][:w].view(1, 1, w, -1).expand(1, h, w, -1),
+                ],
+                dim=-1,
+            ).to(device)
+            rope = rearrange(rope, "f h w c -> c f h w").unsqueeze(0)
+            rope_freqs.append(rope)
+        return torch.cat(rope_freqs, 2)
 
     def decipher_latents_indice_info_for_rope(self, latents_indice_info, h, w, device):
         ropes = []
@@ -515,6 +520,7 @@ class WanModel(torch.nn.Module):
                     h // ratio,
                     w // ratio,
                     device,
+                    mode,
                 )
                 rope_block.append(rope)
             rope_block = torch.cat(rope_block, dim=2)

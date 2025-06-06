@@ -22,6 +22,7 @@ import wandb
 import yaml
 from dataset import TensorHierachicalDataset
 import shutil
+import utils
 
 
 def set_seed(seed: int = 42):
@@ -372,8 +373,52 @@ class LightningModelForTrain(pl.LightningModule):
                 f"{num_updated_keys} parameters are loaded from {pretrained_lora_path}. {num_unexpected_keys} parameters are unexpected."
             )
 
+    @rank_zero_only
+    def preview_dataset(self, latents, latents_indice_info, path):
+        m_latents = latents[:, :, :6]
+        s_latents = latents[:, :, 6:]
+        tiler_kwargs = {"tiled": True, "tile_size": (30, 52), "tile_stride": (15, 26)}
+        frames_m = self.pipe.decode_video(
+            m_latents.to("cpu").to(torch.bfloat16), **tiler_kwargs
+        )
+        frames_m = self.pipe.tensor2video(frames_m[0])
+        vwrite(
+            f"{self.run_dir}/check_m.mp4",
+            frames_m,
+        )
+        s_latents_video = None
+
+        for l in range(3):
+            lat_s = s_latents[:, :, l].unsqueeze(2)
+            lat_s = rearrange(
+                lat_s,
+                " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
+                p1=2,
+                p2=2,
+            )
+            s_latents_video = (
+                lat_s
+                if s_latents_video == None
+                else torch.cat((s_latents_video, lat_s), dim=2)
+            )
+        frames_s = self.pipe.decode_video(
+            s_latents_video.to("cpu").to(torch.bfloat16), **tiler_kwargs
+        )
+        frames_s = self.pipe.tensor2video(frames_s[0])
+        vwrite(
+            f"{self.run_dir}/check_s.mp4",
+            frames_s,
+        )
+        utils.extract_frames(path, 4, self.run_dir)
+        # pass
+
     def training_step(self, batch, batch_idx):
         # Data
+        # print(batch_idx)
+        if batch_idx == 0:
+            self.preview_dataset(
+                batch["latents"], batch["latents_indice_info"], batch["path"][0]
+            )
         latents = batch["latents"].to(self.device)
         prompt_emb = batch["prompt_emb"]
         prompt_emb["context"] = prompt_emb["context"][0].to(self.device)
@@ -516,13 +561,16 @@ class LightningModelForTrain(pl.LightningModule):
                 [start_latent.to(history_latents), clean_latents_1x], dim=2
             )
             # latents
-            clean_latent_indices[:, :, 1] += section_index * len(predicting_indice)
+            indice_drift = (
+                section_index * len(predicting_indice)
+                if self.args.is_absolute_rope
+                else 0
+            )
+            clean_latent_indices[:, :, 1] += indice_drift
             clean_latent_kwargs = {
                 "clean_latent_indices_start": clean_latent_indices_start,
-                "clean_latent_4x_indices": clean_latent_4x_indices
-                + (section_index * len(predicting_indice)),
-                "clean_latent_2x_indices": clean_latent_2x_indices
-                + (section_index * len(predicting_indice)),
+                "clean_latent_4x_indices": clean_latent_4x_indices + indice_drift,
+                "clean_latent_2x_indices": clean_latent_2x_indices + indice_drift,
                 "clean_latent_indices": clean_latent_indices,
                 "latents_indice_info": latents_indice_info,
                 "start_latent": start_latent,
@@ -546,6 +594,7 @@ class LightningModelForTrain(pl.LightningModule):
                 clean_latent_kwargs=clean_latent_kwargs,
                 device=torch.device("cuda"),
             )
+            # self.tiler_kwargs = tiler_kwargs
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat(
                 [
@@ -831,6 +880,12 @@ def parse_args():
         default=None,
         help="SwanLab mode (cloud or local).",
     )
+    parser.add_argument(
+        "--is_absolute_rope",
+        default=False,
+        action="store_true",
+        help="Whether to use absolute rope.",
+    )
     args = parser.parse_args()
     return args
 
@@ -947,6 +1002,7 @@ def train(args):
         s_path=args.s_path,
         xs_path=args.xs_path,
         predict_config=args.predict_config,
+        is_absolute_rope=args.is_absolute_rope,
     )
     val_dataset = TensorHierachicalDataset(
         base_path=args.dataset_path,
@@ -957,6 +1013,7 @@ def train(args):
         xs_path=args.xs_path,
         predict_config=args.predict_config,
         is_val_dataset=True,
+        is_absolute_rope=args.is_absolute_rope,
     )
     # trainset, valset = random_split(dataset, [0.9, 0.1])
 

@@ -20,6 +20,7 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         episode_length_real=385,
         latent_window_size=9,
         is_val_dataset=False,
+        is_absolute_rope=False,
     ):
         metadata = pd.read_csv(metadata_path)
         self.path = [
@@ -40,6 +41,7 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         self.s_path = s_path
         self.xs_path = xs_path
         self.predict_config = load_config(predict_config)
+        self.is_absolute_rope = is_absolute_rope
 
     def __getitem__(self, index):
         data_id = (
@@ -48,18 +50,18 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         data_id = (data_id + index) % len(self.path)  # For fixed seed.
         path = self.path[data_id]
         data_s = torch.load(
-            os.path.join(self.s_path, os.path.basename(path)),
+            os.path.join(self.s_path, "train", os.path.basename(path)),
             weights_only=True,
             map_location="cpu",
         )
         data_xs = torch.load(
-            os.path.join(self.xs_path, os.path.basename(path)),
+            os.path.join(self.xs_path, "train", os.path.basename(path)),
             weights_only=True,
             map_location="cpu",
         )
         data = torch.load(path, weights_only=True, map_location="cpu")
         if self.is_val_dataset:
-            context_data_id = torch.randint(0, len(self.path), (1,))[0]
+            context_data_id = data_id  # torch.randint(0, len(self.path), (1,))[0]
             context_data_id = (context_data_id + index) % len(
                 self.path
             )  # For fixed seed.
@@ -111,7 +113,11 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
             {"m": data["latents"], "s": data_s["latents"], "xs": data_xs["latents"]},
             generating_indices,
         )
-        indice_difference = int(latent_indices[0, 0] - generating_indices[0])
+
+        if self.is_absolute_rope:
+            indice_difference = int(latent_indices[0, 0] - generating_indices[0])
+        else:
+            indice_difference = 0
 
         clean_latent_4x_indices -= indice_difference
         clean_latent_2x_indices -= indice_difference
@@ -179,10 +185,11 @@ if __name__ == "__main__":
     dataset = TensorHierachicalDataset(
         base_path="epic",
         s_path="epic_s",
-        xs_path="epic_xs",
-        metadata_path="epic/metadata.csv",
+        xs_path="epic_s",
+        metadata_path="/home/workspace/DiffSynth-Studio/epic/metadata.csv",
         predict_config="examples/wanvideo/predict_pack_configs/9hrz45.yml",
         steps_per_epoch=199,
+        is_val_dataset=True,
     )  # 创建 TensorDataset 实例
     for idx, data in enumerate(dataset):  # 使用 enumerate 枚举数据集
         print(f"Index: {idx}, Data: {data}")  # 打印索引和数据

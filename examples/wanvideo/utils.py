@@ -94,7 +94,46 @@ def compute_actual_indices(blocks_cfg: dict, x: int) -> dict:
     return result
 
 
+import os, cv2
+from skvideo.io import vwrite
 
+
+def extract_frames(video_path: str, sample_ratio: int, output_dir: str):
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 打开视频
+    video_path = video_path[:-12]
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"无法打开视频文件: {video_path}")
+
+    frame_idx = 0  # 从 1 开始计数时用 frame_idx + 1
+    saved_count = 0
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_idx += 1
+        # 如果当前帧编号能被 sample_ratio 整除，则保存
+        if frame_idx % sample_ratio == 0:
+            # 构造输出图像文件名：frame_000004.jpg、frame_000008.jpg…
+            # filename = f"frame_{frame_idx:06d}.jpg"
+            # save_path = os.path.join(output_dir, filename)
+            # # 以 JPEG 格式保存
+            # cv2.imwrite(save_path, frame)
+            # saved_count += 1
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            # cv2.imwrite(f"{output_dir}/preview_{frame_idx}.png", frame)
+
+    # 保存帧为视频
+    cap.release()
+    vwrite(
+        f"{output_dir}/preview_{sample_ratio}.mp4",
+        frames,
+    )
+    # print(f"视频总帧数：{frame_idx}，共保存了 {saved_count} 张抽取帧到 >{output_dir}<")
 
 
 if __name__ == "__main__":
