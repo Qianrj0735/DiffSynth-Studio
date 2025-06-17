@@ -1,0 +1,134 @@
+# ===================================================================
+# 示例：一共 9 个 block
+# block1: mode = m （1 个 tensor）
+# block2: mode = s （4 个 tensor）
+# block3: mode = xs（16 个 tensor）
+# block4~block9: mode=m（各 1 个 tensor）
+# ===================================================================
+blocks:
+  block1:
+    mode: m
+    tensors:
+      - name: t1_m
+        index:
+          rel_offset: 0 # 读取 x + 1 帧
+
+  block2:
+    mode: m
+    tensors:
+      - name: t2_m
+        index:
+          rel_offset: 1 # 读取 x + 1 帧
+
+  block3:
+    mode: m
+    tensors:
+      - name: t3_m
+        index:
+          rel_offset: 2 # 读取 x + 1 帧
+
+  block4:
+    mode: m
+    tensors:
+      - name: t4_m
+        index:
+          rel_offset: 3
+
+  block5:
+    mode: m
+    tensors:
+      - name: t5_m
+        index:
+          rel_offset: 4
+
+  block6:
+    mode: m
+    tensors:
+      - name: t6_m
+        index:
+          rel_offset: 5
+
+  block7:
+    mode: ms
+    tensors:
+      - name: t7_ms1
+        index:
+          fixed: 1
+
+  block8:
+    mode: ms
+    tensors:
+      - name: t8_ms2
+        index:
+          fixed: 2
+
+  block9:
+    mode: ms
+    tensors:
+      - name: t9_ms3
+        index:
+          fixed: 3
+
+  block10:
+    mode: ms
+    tensors:
+      - name: t10_ms4
+        index:
+          fixed: 4
+
+  block11:
+    mode: ms
+    tensors:
+      - name: t11_ms5
+        index:
+          fixed: 5
+
+  block12:
+    mode: ms
+    tensors:
+      - name: t12_ms6
+        index:
+          fixed: 6
+
+  block13:
+    mode: ms
+    tensors:
+      - name: t13_ms7
+        index:
+          fixed: 7
+
+  block14:
+    mode: ms
+    tensors:
+      - name: t14_ms8
+        index:
+          fixed: 8
+
+  block15:
+    mode: ms
+    tensors:
+      - name: t15_ms9
+        index:
+          fixed: 9
+
+  block16:
+    mode: ms
+    tensors:
+      - name: t16_ms10
+        index:
+          fixed: 10
+
+  block17:
+    mode: ms
+    tensors:
+      - name: t17_ms11
+        index:
+          fixed: 11
+
+  block18:
+    mode: ms
+    tensors:
+      - name: t18_ms12
+        index:
+          fixed: 12
+# ===================================================================

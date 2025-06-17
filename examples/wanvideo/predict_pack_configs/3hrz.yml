@@ -1,0 +1,56 @@
+# ===================================================================
+# 示例：一共 9 个 block
+# block1: mode = m （1 个 tensor）
+# block2: mode = s （4 个 tensor）
+# block3: mode = xs（16 个 tensor）
+# block4~block9: mode=m（各 1 个 tensor）
+# ===================================================================
+blocks:
+  block1:
+    mode: s
+    tensors:
+      - name: t1_s1
+        index:
+          fixed: 1 # 读取 x + 0 帧（即 x 帧）
+      - name: t1_s2
+        index:
+          fixed: 2 # 固定读取第 5 帧
+      - name: t1_s3
+        index:
+          fixed: 3 # 读取 x - 1 帧
+      - name: t1_s4
+        index:
+          fixed: 4 # 固定读取第 10 帧
+
+  block2:
+    mode: s
+    tensors:
+      - name: t2_s1
+        index:
+          fixed: 5 # 读取 x + 0 帧（即 x 帧）
+      - name: t2_s2
+        index:
+          fixed: 6 # 固定读取第 5 帧
+      - name: t2_s3
+        index:
+          fixed: 7 # 读取 x - 1 帧
+      - name: t2_s4
+        index:
+          fixed: 8 # 固定读取第 10 帧
+
+  block3:
+    mode: s
+    tensors:
+      - name: t3_s1
+        index:
+          fixed: 9 # 读取 x + 0 帧（即 x 帧）
+      - name: t3_s2
+        index:
+          fixed: 10 # 固定读取第 5 帧
+      - name: t3_s3
+        index:
+          fixed: 11 # 读取 x - 1 帧
+      - name: t3_s4
+        index:
+          fixed: 12 # 固定读取第 10 帧
+

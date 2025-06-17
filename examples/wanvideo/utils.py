@@ -26,13 +26,13 @@ def validate_block(block_name: str, block_info: dict):
     """
     mode = block_info.get("mode")
     tensors = block_info.get("tensors")
-    if mode not in ("m", "s", "xs"):
+    if mode not in ("m", "s", "xs", "ms"):
         raise ValueError(
-            f"Block {block_name} 的 mode 必须是 'm'、's' 或 'xs'，当前是：{mode}"
+            f"Block {block_name} 的 mode 必须是 'ms','m'、's' 或 'xs'，当前是：{mode}"
         )
     if not isinstance(tensors, list):
         raise ValueError(f"Block {block_name} 的 'tensors' 应该是列表。")
-    expected_len = {"m": 1, "s": 4, "xs": 16}[mode]
+    expected_len = {"m": 1, "ms": 1, "s": 4, "xs": 16}[mode]
     if len(tensors) != expected_len:
         raise ValueError(
             f"Block {block_name} 的 mode='{mode}' 应该有 {expected_len} 个 tensor，"

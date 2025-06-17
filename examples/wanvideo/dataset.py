@@ -14,6 +14,7 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         base_path,
         s_path,
         xs_path,
+        ms_path,
         predict_config,
         metadata_path,
         steps_per_epoch,
@@ -40,6 +41,7 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         self.is_val_dataset = is_val_dataset
         self.s_path = s_path
         self.xs_path = xs_path
+        self.ms_path = ms_path
         self.predict_config = load_config(predict_config)
         self.is_absolute_rope = is_absolute_rope
 
@@ -49,6 +51,11 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         )
         data_id = (data_id + index) % len(self.path)  # For fixed seed.
         path = self.path[data_id]
+        data_ms = torch.load(
+            os.path.join(self.ms_path, "train", os.path.basename(path)),
+            weights_only=True,
+            map_location="cpu",
+        )
         data_s = torch.load(
             os.path.join(self.s_path, "train", os.path.basename(path)),
             weights_only=True,
@@ -110,7 +117,12 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
         )
         # latents = self.read_latent(data["latents"], generating_indices)
         latents, latents_indice_info = self.read_packed_latent(
-            {"m": data["latents"], "s": data_s["latents"], "xs": data_xs["latents"]},
+            {
+                "m": data["latents"],
+                "ms": data_ms["latents"],
+                "s": data_s["latents"],
+                "xs": data_xs["latents"],
+            },
             generating_indices,
         )
 
@@ -183,11 +195,11 @@ class TensorHierachicalDataset(torch.utils.data.Dataset):
 if __name__ == "__main__":
     # use the dataset defined above and enumerate the dataset:
     dataset = TensorHierachicalDataset(
-        base_path="epic",
-        s_path="epic_s",
-        xs_path="epic_s",
+        base_path="/home/workspace/DiffSynth-Studio/epic",
+        s_path="/home/workspace/DiffSynth-Studio/epic_s",
+        xs_path="/home/workspace/DiffSynth-Studio/epic_s",
         metadata_path="/home/workspace/DiffSynth-Studio/epic/metadata.csv",
-        predict_config="examples/wanvideo/predict_pack_configs/9hrz45.yml",
+        predict_config="examples/wanvideo/predict_pack_configs/3hrz.yml",
         steps_per_epoch=199,
         is_val_dataset=True,
     )  # 创建 TensorDataset 实例

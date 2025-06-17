@@ -8,7 +8,7 @@ from peft import LoraConfig, inject_adapter_in_model
 import torchvision
 from PIL import Image
 import numpy as np
-import random
+import random, json
 import datetime
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import random_split
@@ -374,50 +374,63 @@ class LightningModelForTrain(pl.LightningModule):
             )
 
     @rank_zero_only
-    def preview_dataset(self, latents, latents_indice_info, path):
-        m_latents = latents[:, :, :6]
-        s_latents = latents[:, :, 6:]
-        tiler_kwargs = {"tiled": True, "tile_size": (30, 52), "tile_stride": (15, 26)}
-        frames_m = self.pipe.decode_video(
-            m_latents.to("cpu").to(torch.bfloat16), **tiler_kwargs
-        )
-        frames_m = self.pipe.tensor2video(frames_m[0])
-        vwrite(
-            f"{self.run_dir}/check_m.mp4",
-            frames_m,
-        )
-        s_latents_video = None
+    def preview_dataset(self, latents, latents_indice_info, path, packed_indice):
+        # m_latents = latents[:, :, :6]
 
-        for l in range(3):
-            lat_s = s_latents[:, :, l].unsqueeze(2)
-            lat_s = rearrange(
-                lat_s,
-                " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
-                p1=2,
-                p2=2,
-            )
-            s_latents_video = (
-                lat_s
-                if s_latents_video == None
-                else torch.cat((s_latents_video, lat_s), dim=2)
-            )
+        tiler_kwargs = {"tiled": True, "tile_size": (30, 52), "tile_stride": (15, 26)}
+        # frames_m = self.pipe.decode_video(
+        #     m_latents.to("cpu").to(torch.bfloat16), **tiler_kwargs
+        # )
+        # frames_m = self.pipe.tensor2video(frames_m[0])
+        # vwrite(
+        #     f"{self.run_dir}/check_m.mp4",
+        #     frames_m,
+        # )
+        s_latents = None
+
+        for block, packed_ind in zip(
+            np.array(latents_indice_info[0].split("|")[:-1])[
+                np.array([int(ids) for ids in self.args.packed_indice.split(",")])
+            ],
+            packed_indice,
+        ):
+            for element in block.split(",")[:-1]:
+                mode = element.split("_")[0]
+                break
+            lat = latents[:, :, packed_ind].to(latents).unsqueeze(2)
+            if mode == "ms":
+                pass
+            elif mode == "s":
+                lat = rearrange(
+                    lat,
+                    " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
+                    p1=2,
+                    p2=2,
+                )
+            s_latents = lat if s_latents == None else torch.cat((s_latents, lat), 2)
         frames_s = self.pipe.decode_video(
-            s_latents_video.to("cpu").to(torch.bfloat16), **tiler_kwargs
+            s_latents.to("cpu").to(torch.bfloat16), **tiler_kwargs
         )
         frames_s = self.pipe.tensor2video(frames_s[0])
         vwrite(
-            f"{self.run_dir}/check_s.mp4",
+            f"{self.run_dir}/check_s_{len(frames_s)}.mp4",
             frames_s,
         )
-        utils.extract_frames(path, 4, self.run_dir)
+        # utils.extract_frames(path, 4, self.run_dir)
         # pass
 
     def training_step(self, batch, batch_idx):
         # Data
         # print(batch_idx)
         if batch_idx == 0:
+            packed_indice = np.array(
+                [int(ids) for ids in self.args.packed_indice.split(",")]
+            )
             self.preview_dataset(
-                batch["latents"], batch["latents_indice_info"], batch["path"][0]
+                batch["latents"],
+                batch["latents_indice_info"],
+                batch["path"][0],
+                packed_indice,
             )
         latents = batch["latents"].to(self.device)
         prompt_emb = batch["prompt_emb"]
@@ -518,6 +531,9 @@ class LightningModelForTrain(pl.LightningModule):
         predicting_indice = np.array(
             [int(ids) for ids in self.args.predicting_indice.split(",")]
         )
+        packed_indice = np.array(
+            [int(ids) for ids in self.args.packed_indice.split(",")]
+        )
         self.pipe.requires_grad_(False)
         self.pipe.eval()
         start_latent = batch["start_latent"].to(self.device)
@@ -526,16 +542,7 @@ class LightningModelForTrain(pl.LightningModule):
             dtype=torch.float32,
         ).cpu()
         history_pixels = None
-        s_latents = torch.zeros(
-            size=(
-                1,
-                16,
-                16 + 2 + 1,
-                start_latent.size(-2) // 2,
-                start_latent.size(-1) // 2,
-            ),
-            dtype=torch.float32,
-        ).cpu()
+        s_latents = None
         history_latents = torch.cat(
             [history_latents, start_latent.to(history_latents)], dim=2
         )
@@ -552,7 +559,7 @@ class LightningModelForTrain(pl.LightningModule):
             image_emb["clip_feature"] = image_emb["clip_feature"][0].to(self.device)
         if "y" in image_emb:
             image_emb["y"] = image_emb["y"][0].to(self.device)
-
+        all_rope_indices = {}
         for section_index in tqdm(range(self.num_validation_blocks)):
             clean_latents_4x, clean_latents_2x, clean_latents_1x = history_latents[
                 :, :, -sum([16, 2, 1]) :, :, :
@@ -562,15 +569,20 @@ class LightningModelForTrain(pl.LightningModule):
             )
             # latents
             indice_drift = (
-                section_index * len(predicting_indice)
-                if self.args.is_absolute_rope
+                len(predicting_indice)
+                if self.args.is_absolute_rope and section_index != 0
                 else 0
             )
+            latents_indice_info = shift_latents_indice_info(
+                latents_indice_info, indice_drift
+            )
             clean_latent_indices[:, :, 1] += indice_drift
+            clean_latent_4x_indices += indice_drift
+            clean_latent_2x_indices += indice_drift
             clean_latent_kwargs = {
                 "clean_latent_indices_start": clean_latent_indices_start,
-                "clean_latent_4x_indices": clean_latent_4x_indices + indice_drift,
-                "clean_latent_2x_indices": clean_latent_2x_indices + indice_drift,
+                "clean_latent_4x_indices": clean_latent_4x_indices,
+                "clean_latent_2x_indices": clean_latent_2x_indices,
                 "clean_latent_indices": clean_latent_indices,
                 "latents_indice_info": latents_indice_info,
                 "start_latent": start_latent,
@@ -583,7 +595,7 @@ class LightningModelForTrain(pl.LightningModule):
                 batch["latents"].shape[:],
                 generator=torch.Generator().manual_seed(0),
             )
-            video, generated_latents, tiler_kwargs = self.pipe(
+            rope_indices, generated_latents, tiler_kwargs = self.pipe(
                 cfg_scale=1.0,
                 num_inference_steps=50,
                 seed=0,
@@ -594,6 +606,7 @@ class LightningModelForTrain(pl.LightningModule):
                 clean_latent_kwargs=clean_latent_kwargs,
                 device=torch.device("cuda"),
             )
+            all_rope_indices[section_index] = rope_indices
             # self.tiler_kwargs = tiler_kwargs
             total_generated_latent_frames += int(generated_latents.shape[2])
             history_latents = torch.cat(
@@ -603,38 +616,55 @@ class LightningModelForTrain(pl.LightningModule):
                 ],
                 dim=2,
             )
-            for l in range(3):
-                lat_s = generated_latents[:, :, 3 - l].to(history_latents).unsqueeze(2)
-                lat_s = rearrange(
-                    lat_s,
-                    " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
-                    p1=2,
-                    p2=2,
+            for block, packed_ind in zip(
+                np.array(latents_indice_info[0].split("|")[:-1])[
+                    np.array([int(ids) for ids in self.args.packed_indice.split(",")])
+                ],
+                packed_indice,
+            ):
+                for element in block.split(",")[:-1]:
+                    mode = element.split("_")[0]
+                    break
+                lat = (
+                    generated_latents[:, :, packed_ind].to(history_latents).unsqueeze(2)
                 )
-                s_latents = torch.cat((s_latents, lat_s), 2)
+                if mode == "ms":
+                    pass
+                elif mode == "s":
+                    lat = rearrange(
+                        lat,
+                        " b o 1 (h p1) (w p2) -> b o (p1 p2) h w",
+                        p1=2,
+                        p2=2,
+                    )
+                s_latents = lat if s_latents == None else torch.cat((s_latents, lat), 2)
                 # videos.append(latent)
         # print(f"saving to {self.run_dir}/{self.trainer.current_epoch}.mp4")
         # for i, v in enumerate(videos):
         #     videos[i] = np.asarray(v)
         p = batch["path"][0].replace("/", "_")
-        frames_s = self.pipe.decode_video(
-            s_latents[:, :, 16 + 2 + 1 :].to(torch.bfloat16), **tiler_kwargs
-        )
+        self.pipe.load_models_to_device(["vae"])
+        frames_s = self.pipe.decode_video(s_latents.to(torch.bfloat16), **tiler_kwargs)
         frames_s = self.pipe.tensor2video(frames_s[0])
         vwrite(
             f"{self.run_dir}/last3_{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
             frames_s,
         )
-        self.pipe.load_models_to_device(["vae"])
+        with open(
+            f"{self.run_dir}/rope_indices_{self.trainer.current_epoch}_{p}_{time.time_ns()}.json",
+            "w",
+        ) as f:
+            json.dump(all_rope_indices, f, indent=2)
         frames = self.pipe.decode_video(
             history_latents[:, :, 16 + 2 + 1 :].to(torch.bfloat16), **tiler_kwargs
         )
-        self.pipe.load_models_to_device([])
+
         frames = self.pipe.tensor2video(frames[0])
         vwrite(
             f"{self.run_dir}/decode_all_{self.trainer.current_epoch}_{p}_{time.time_ns()}.mp4",
             frames,
         )
+        self.pipe.load_models_to_device([])
         self.pipe.scheduler.set_timesteps(1000, training=True)
         self.freeze_parameters()
         if False:
@@ -649,6 +679,28 @@ class LightningModelForTrain(pl.LightningModule):
         else:
             self.pipe.denoising_model().requires_grad_(True)
         return
+
+
+def shift_latents_indice_info(latents_indice_info, indice_drift):
+    # indice_drift = 3
+    latents_indice_info_list = latents_indice_info[0].split("|")
+    shifted_latents_indice_info = ""
+    for lii in latents_indice_info_list:
+        if lii == "":
+            continue
+        li = lii.split(",")
+        rope_block = []
+        for l in li:
+            if l == "":
+                continue
+            mode, indice = l.split("_")
+            indice = int(indice)
+            if mode == "m":
+                indice += indice_drift
+            shifted_latents_indice_info += f"{mode}_{indice}"
+            shifted_latents_indice_info += ","
+        shifted_latents_indice_info += "|"
+    return [shifted_latents_indice_info]
 
 
 def parse_args():
@@ -846,6 +898,12 @@ def parse_args():
         help="Pretrained LoRA path. Required if the training is resumed.",
     )
     parser.add_argument(
+        "--ms_path",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
         "--s_path",
         type=str,
         default=None,
@@ -870,6 +928,12 @@ def parse_args():
         help="Pretrained LoRA path. Required if the training is resumed.",
     )
     parser.add_argument(
+        "--packed_indice",
+        type=str,
+        default=None,
+        help="Pretrained LoRA path. Required if the training is resumed.",
+    )
+    parser.add_argument(
         "--use_swanlab",
         default=False,
         action="store_true",
@@ -885,6 +949,9 @@ def parse_args():
         default=False,
         action="store_true",
         help="Whether to use absolute rope.",
+    )
+    parser.add_argument(
+        "--num_val_batches", type=int, default=1, help="Number of validation batches."
     )
     args = parser.parse_args()
     return args
@@ -1001,6 +1068,7 @@ def train(args):
         episode_length_real=args.num_frames,
         s_path=args.s_path,
         xs_path=args.xs_path,
+        ms_path=args.ms_path,
         predict_config=args.predict_config,
         is_absolute_rope=args.is_absolute_rope,
     )
@@ -1011,6 +1079,7 @@ def train(args):
         episode_length_real=args.num_frames,
         s_path=args.s_path,
         xs_path=args.xs_path,
+        ms_path=args.ms_path,
         predict_config=args.predict_config,
         is_val_dataset=True,
         is_absolute_rope=args.is_absolute_rope,
@@ -1022,7 +1091,7 @@ def train(args):
     )
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        shuffle=False,
+        shuffle=True,
         batch_size=1,
         num_workers=args.dataloader_num_workers,
     )
@@ -1078,14 +1147,16 @@ def train(args):
         default_root_dir=run_dir,
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=[
-            pl.pytorch.callbacks.ModelCheckpoint(save_last=True, every_n_epochs=5)
+            pl.pytorch.callbacks.ModelCheckpoint(
+                save_last=True, save_top_k=-1, every_n_epochs=5
+            )
         ],
         logger=wandb_logger,
         log_every_n_steps=1,
         # gradient_clip_val=0.5,  # clip 阈值
         # gradient_clip_algorithm="norm",
         num_sanity_val_steps=1,
-        limit_val_batches=1,
+        limit_val_batches=args.num_val_batches,
     )
     trainer.fit(model, dataloader, val_dataloaders=val_dataloader)
 
@@ -1097,6 +1168,7 @@ def inference(args):
         metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        ms_path=args.ms_path,
         s_path=args.s_path,
         xs_path=args.xs_path,
         predict_config=args.predict_config,
@@ -1106,6 +1178,7 @@ def inference(args):
         metadata_path=os.path.join(args.dataset_path, "metadata.csv"),
         steps_per_epoch=args.steps_per_epoch,
         episode_length_real=args.num_frames,
+        ms_path=args.ms_path,
         s_path=args.s_path,
         xs_path=args.xs_path,
         predict_config=args.predict_config,

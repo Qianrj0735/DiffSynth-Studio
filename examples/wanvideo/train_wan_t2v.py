@@ -8,6 +8,9 @@ from peft import LoraConfig, inject_adapter_in_model
 import torchvision
 from PIL import Image
 import numpy as np
+from skvideo.io import vwrite
+import copy
+from pytorch_lightning.loggers import CSVLogger
 
 
 class TextVideoDataset(torch.utils.data.Dataset):
@@ -21,6 +24,7 @@ class TextVideoDataset(torch.utils.data.Dataset):
         height=480,
         width=832,
         is_i2v=False,
+        save_pth_path=None,
     ):
         metadata = pd.read_csv(metadata_path)
         self.path = [
@@ -31,11 +35,11 @@ class TextVideoDataset(torch.utils.data.Dataset):
 
         self.max_num_frames = max_num_frames
         self.frame_interval = frame_interval
-        self.num_frames = num_frames
+        self.num_frames = (num_frames - 1) // frame_interval
         self.height = height
         self.width = width
         self.is_i2v = is_i2v
-
+        self.save_pth_path = save_pth_path
         self.frame_process = v2.Compose(
             [
                 v2.CenterCrop(size=(height, width)),
@@ -67,23 +71,26 @@ class TextVideoDataset(torch.utils.data.Dataset):
         reader = imageio.get_reader(file_path)
         if (
             reader.count_frames() < max_num_frames
-            or reader.count_frames() - 1 < start_frame_id + (num_frames - 1) * interval
+            or reader.count_frames() - 1 < start_frame_id + num_frames * interval
         ):
             reader.close()
             return None
 
         frames = []
+        videos = []
         first_frame = None
-        for frame_id in range(num_frames):
+        for frame_id in range(num_frames + 1):
             frame = reader.get_data(start_frame_id + frame_id * interval)
             frame = Image.fromarray(frame)
+            videos.append(copy.deepcopy(frame))
             frame = self.crop_and_resize(frame)
             if first_frame is None:
                 first_frame = frame
             frame = frame_process(frame)
             frames.append(frame)
         reader.close()
-
+        if self.save_pth_path is not None:
+            vwrite(f"{self.save_pth_path}/{file_path.split('/')[-1]}", videos)
         frames = torch.stack(frames, dim=0)
         frames = rearrange(frames, "T C H W -> C T H W")
 
@@ -99,7 +106,7 @@ class TextVideoDataset(torch.utils.data.Dataset):
 
     def load_video(self, file_path):
         start_frame_id = torch.randint(
-            0, self.max_num_frames - (self.num_frames - 1) * self.frame_interval, (1,)
+            0, self.max_num_frames - (self.num_frames * self.frame_interval), (1,)
         )[0]
         frames = self.load_frames_using_imageio(
             file_path,
@@ -161,6 +168,7 @@ class LightningModelForDataProcess(pl.LightningModule):
         tiled=False,
         tile_size=(34, 34),
         tile_stride=(18, 16),
+        save_pth_path=None,
     ):
         super().__init__()
         model_path = [text_encoder_path, vae_path]
@@ -175,6 +183,7 @@ class LightningModelForDataProcess(pl.LightningModule):
             "tile_size": tile_size,
             "tile_stride": tile_stride,
         }
+        self.save_pth_path = save_pth_path
 
     def test_step(self, batch, batch_idx):
         text, video, path = batch["text"][0], batch["video"], batch["path"][0]
@@ -200,7 +209,16 @@ class LightningModelForDataProcess(pl.LightningModule):
                 "prompt_emb": prompt_emb,
                 "image_emb": image_emb,
             }
-            torch.save(data, path + ".tensors.pth")
+            self.log(f"latents shape:{latents.shape}", value=0.0, prog_bar=True)
+            if self.save_pth_path is not None:
+                torch.save(
+                    data,
+                    os.path.join(
+                        self.save_pth_path, os.path.basename(path) + ".tensors.pth"
+                    ),
+                )
+            else:
+                torch.save(data, path + ".tensors.pth")
 
 
 class TensorDataset(torch.utils.data.Dataset):
@@ -577,24 +595,42 @@ def parse_args():
         default=None,
         help="SwanLab mode (cloud or local).",
     )
+    parser.add_argument(
+        "--save_pth_path",
+        type=str,
+        default=None,
+        help="Path to save the processed tensors.",
+    )
+    parser.add_argument(
+        "--frame_interval",
+        type=int,
+        default=1,
+        help="Frame interval for video processing. If None, it will be set to 1.",
+    )
     args = parser.parse_args()
     return args
 
 
 def data_process(args):
+    os.makedirs(args.save_pth_path, exist_ok=True)
+    logger = CSVLogger(args.output_path, name="data_process")
+    setattr(args, "save_pth_path", os.path.join(args.save_pth_path, "train"))
+    os.makedirs(args.save_pth_path, exist_ok=True)
     dataset = TextVideoDataset(
         args.dataset_path,
         os.path.join(args.dataset_path, "metadata.csv"),
         max_num_frames=args.num_frames,
-        frame_interval=1,
+        frame_interval=args.frame_interval,
         num_frames=args.num_frames,
         height=args.height,
         width=args.width,
         is_i2v=args.image_encoder_path is not None,
+        save_pth_path=args.save_pth_path,
     )
     dataloader = torch.utils.data.DataLoader(
         dataset, shuffle=False, batch_size=1, num_workers=args.dataloader_num_workers
     )
+
     model = LightningModelForDataProcess(
         text_encoder_path=args.text_encoder_path,
         image_encoder_path=args.image_encoder_path,
@@ -602,11 +638,14 @@ def data_process(args):
         tiled=args.tiled,
         tile_size=(args.tile_size_height, args.tile_size_width),
         tile_stride=(args.tile_stride_height, args.tile_stride_width),
+        save_pth_path=args.save_pth_path,
     )
     trainer = pl.Trainer(
         accelerator="gpu",
         devices="auto",
         default_root_dir=args.output_path,
+        log_every_n_steps=1,
+        logger=logger,
     )
     trainer.test(model, dataloader)
 

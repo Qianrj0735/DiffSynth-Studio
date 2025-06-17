@@ -634,7 +634,7 @@ class WanVideoPipeline(BasePipeline):
             )
 
             # Inference
-            noise_pred_posi = model_fn_wan_video(
+            noise_pred_posi, rope_indices = model_fn_wan_video(
                 self.dit,
                 motion_controller=self.motion_controller,
                 vace=self.vace,
@@ -650,7 +650,7 @@ class WanVideoPipeline(BasePipeline):
                 **clean_latent_kwargs,
             )
             if cfg_scale != 1.0:
-                noise_pred_nega = model_fn_wan_video(
+                noise_pred_nega, rope_indices = model_fn_wan_video(
                     self.dit,
                     motion_controller=self.motion_controller,
                     vace=self.vace,
@@ -680,12 +680,12 @@ class WanVideoPipeline(BasePipeline):
             latents = latents[:, :, 1:]
 
         # Decode
-        self.load_models_to_device(["vae"])
-        frames = self.decode_video(latents, **tiler_kwargs)
-        self.load_models_to_device([])
-        frames = self.tensor2video(frames[0])
+        # self.load_models_to_device(["vae"])
+        # frames = self.decode_video(latents, **tiler_kwargs)
+        # self.load_models_to_device([])
+        # frames = self.tensor2video(frames[0])
 
-        return frames, latents, tiler_kwargs
+        return rope_indices, latents, tiler_kwargs
 
 
 class TeaCache:
@@ -830,8 +830,8 @@ def model_fn_wan_video(
         "clean_latents": clean_latents,
     }
 
-    x, freqs, len_latents, unpatchify_info = dit.process_input_hidden_states(
-        **all_latents
+    x, freqs, len_latents, unpatchify_info, rope_indices = (
+        dit.process_input_hidden_states(**all_latents)
     )
 
     # TeaCache
@@ -865,4 +865,4 @@ def model_fn_wan_video(
             x = get_sp_group().all_gather(x, dim=1)
     x = x[:, -len_latents:]
     x = dit.unpatchify(x, unpatchify_info)
-    return x
+    return x, rope_indices

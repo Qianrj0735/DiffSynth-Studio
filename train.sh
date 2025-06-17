@@ -39,13 +39,17 @@
  --vae_path "/root/.cache/huggingface/hub/models--alibaba-pai--Wan2.1-Fun-1.3B-InP/snapshots/7693adbe4ae670234958e42aa98145b4a406116c/Wan2.1_VAE.pth" \
  --steps_per_epoch 10000 \
  --max_epochs 100 \
- --learning_rate 3e-5 \
- --accumulate_grad_batches 8 \
+ --learning_rate 1e-4 \
+ --accumulate_grad_batches 4 \
  --use_gradient_checkpointing \
  --num_frames 193 \
  --dataloader_num_workers 25 \
  --s_path epic_s \
  --xs_path epic_s \
- --predict_config /home/workspace/DiffSynth-Studio/examples/wanvideo/predict_pack_configs/9hrz45.yml \
+ --ms_path epic_m_interval_4\
+ --predict_config /home/workspace/DiffSynth-Studio/examples/wanvideo/predict_pack_configs/6m12ms.yml \
  --predicting_indice "0,1,2,3,4,5" \
+ --packed_indice "6,7,8,9,10,11,12,13,14,15,16,17" \
+ --num_validation_blocks 8 \
+ --num_val_batches 2 \
  --is_absolute_rope

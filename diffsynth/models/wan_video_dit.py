@@ -5,6 +5,7 @@ import math
 from typing import Tuple, Optional
 from einops import rearrange
 from .utils import hash_state_dict_keys
+import random
 
 try:
     import flash_attn_interface
@@ -475,11 +476,14 @@ class WanModel(torch.nn.Module):
     def retrieve_rope(self, frame_indices, h, w, device, mode="m"):
         frame_indices = frame_indices.to(self.freqs[0].device)[0, 0]
         rope_freqs = []
+        converted_frame_indices = []
         for frame_indice in frame_indices:
             if mode == "m":
                 converted_frame_indice = frame_indice
+            elif mode == "ms":
+                converted_frame_indice = frame_indice * 4 - random.randint(0, 3)
             elif mode == "s":
-                converted_frame_indice = frame_indice*4 -3
+                converted_frame_indice = frame_indice * 4 - 3
             # splited_frame_indice = torch.clip(splited_frame_indice, -1, 1e9).int()
             # print(f"origin:{frame_indice},mode:{mode},splited:{splited_frame_indice}")
             rope = torch.cat(
@@ -494,9 +498,12 @@ class WanModel(torch.nn.Module):
             ).to(device)
             rope = rearrange(rope, "f h w c -> c f h w").unsqueeze(0)
             rope_freqs.append(rope)
-        return torch.cat(rope_freqs, 2)
+            converted_frame_indices.append(int(converted_frame_indice))
+        return torch.cat(rope_freqs, 2), converted_frame_indices
 
-    def decipher_latents_indice_info_for_rope(self, latents_indice_info, h, w, device):
+    def decipher_latents_indice_info_for_rope(
+        self, latents_indice_info, h, w, device, rope_indices
+    ):
         ropes = []
         latents_indice_info = latents_indice_info[0].split("|")
         for lii in latents_indice_info:
@@ -508,14 +515,14 @@ class WanModel(torch.nn.Module):
                 if l == "":
                     continue
                 mode = l.split("_")[0]
-                if mode == "m":
+                if mode == "m" or mode == "ms":
                     ratio = 1
                 elif mode == "s":
                     ratio = 2
                 elif mode == "xs":
                     ratio = 4
                 indice = int(l.split("_")[1])
-                rope = self.retrieve_rope(
+                rope, converted_frame_indice = self.retrieve_rope(
                     torch.LongTensor([indice]).unsqueeze(0).unsqueeze(0),
                     h // ratio,
                     w // ratio,
@@ -527,8 +534,9 @@ class WanModel(torch.nn.Module):
             rope_block = rearrange(
                 rope_block, "b o (p1 p2) h w -> b o 1 (h p1) (w p2)", p1=ratio, p2=ratio
             )
+            rope_indices[lii] = converted_frame_indice
             ropes.append(rope_block)
-        return torch.cat(ropes, dim=2).to(device)
+        return torch.cat(ropes, dim=2).to(device), rope_indices
 
     def process_input_hidden_states(
         self,
@@ -543,22 +551,25 @@ class WanModel(torch.nn.Module):
         **kwargs,
     ):
 
+        rope_indices = {}
         hidden_states, (f, h, w) = self.patchify(latents)
         len_latents = hidden_states.shape[1]
         # f = 29  # TODO currently hardcoded for start 1 history 19 predict 9
         # latent_indices = latent_indices.to(self.freqs[0].device)
-        rope_freqs = self.decipher_latents_indice_info_for_rope(
-            latents_indice_info, h, w, hidden_states.device
+        rope_freqs, rope_indices = self.decipher_latents_indice_info_for_rope(
+            latents_indice_info, h, w, hidden_states.device, rope_indices
         )
         rope_freqs = rope_freqs.flatten(2).transpose(1, 2)
         if clean_latents is not None and clean_latent_indices is not None:
             clean_latents = clean_latents.to(hidden_states)
             clean_latents = self.clean_x_embedder.proj(clean_latents)
             clean_latents = clean_latents.flatten(2).transpose(1, 2)
-            clean_latent_rope_freqs = (
+            clean_latent_rope_freqs, clean_latent_converted_frame_indice = (
                 self.retrieve_rope(clean_latent_indices, h, w, hidden_states.device)
-                .flatten(2)
-                .transpose(1, 2)
+            )
+            clean_latent_rope_freqs = clean_latent_rope_freqs.flatten(2).transpose(1, 2)
+            rope_indices["clean_latent_converted_frame_indice"] = (
+                clean_latent_converted_frame_indice
             )
             hidden_states = torch.cat([clean_latents, hidden_states], dim=1)
             rope_freqs = torch.cat([clean_latent_rope_freqs, rope_freqs], dim=1)
@@ -568,8 +579,11 @@ class WanModel(torch.nn.Module):
             clean_latents_2x = pad_for_3d_conv(clean_latents_2x, (2, 4, 4))
             clean_latents_2x = self.clean_x_embedder.proj_2x(clean_latents_2x)
             clean_latents_2x = clean_latents_2x.flatten(2).transpose(1, 2)
-            clean_latent_2x_rope_freqs = self.retrieve_rope(
-                clean_latent_2x_indices, h, w, hidden_states.device
+            clean_latent_2x_rope_freqs, clean_latent_2x_converted_frame_indice = (
+                self.retrieve_rope(clean_latent_2x_indices, h, w, hidden_states.device)
+            )
+            rope_indices["clean_latent_2x_converted_frame_indice"] = (
+                clean_latent_2x_converted_frame_indice
             )
             clean_latent_2x_rope_freqs = pad_for_3d_conv(
                 clean_latent_2x_rope_freqs, (2, 2, 2)
@@ -589,8 +603,11 @@ class WanModel(torch.nn.Module):
             clean_latents_4x = pad_for_3d_conv(clean_latents_4x, (4, 8, 8))
             clean_latents_4x = self.clean_x_embedder.proj_4x(clean_latents_4x)
             clean_latents_4x = clean_latents_4x.flatten(2).transpose(1, 2)
-            clean_latent_4x_rope_freqs = self.retrieve_rope(
-                clean_latent_4x_indices, h, w, hidden_states.device
+            clean_latent_4x_rope_freqs, clean_latent_4x_converted_frame_indice = (
+                self.retrieve_rope(clean_latent_4x_indices, h, w, hidden_states.device)
+            )
+            rope_indices["clean_latent_4x_converted_frame_indice"] = (
+                clean_latent_4x_converted_frame_indice
             )
             clean_latent_4x_rope_freqs = pad_for_3d_conv(
                 clean_latent_4x_rope_freqs, (4, 4, 4)
@@ -605,7 +622,13 @@ class WanModel(torch.nn.Module):
             hidden_states = torch.cat([clean_latents_4x, hidden_states], dim=1)
             rope_freqs = torch.cat([clean_latent_4x_rope_freqs, rope_freqs], dim=1)
 
-        return hidden_states, rope_freqs.transpose(0, 1), len_latents, (f, h, w)
+        return (
+            hidden_states,
+            rope_freqs.transpose(0, 1),
+            len_latents,
+            (f, h, w),
+            rope_indices,
+        )
 
     def forward(
         self,
@@ -649,8 +672,8 @@ class WanModel(torch.nn.Module):
             "clean_latents_2x": clean_latents_2x,
             "clean_latents": clean_latents,
         }
-        x, freqs, len_latents, unpatchify_info = self.process_input_hidden_states(
-            **all_latents
+        x, freqs, len_latents, unpatchify_info, rope_indices = (
+            self.process_input_hidden_states(**all_latents)
         )
 
         def create_custom_forward(module):
